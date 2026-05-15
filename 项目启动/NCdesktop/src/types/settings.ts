@@ -24,8 +24,10 @@ export interface AppSettings {
   analyticsEnabled: boolean;
   dataStoragePath: string;
 
-  /** 学习功能总开关（sidebar v2，ADR-005） */
+  /** 学习功能总开关（sidebar v2，ADR-005）— 控制左侧栏「知识系统」分组（今日复习 + 知识库） */
   showLearningFeatures: boolean;
+  /** 学生中心总开关 — 控制左侧栏「日历」入口 */
+  showStudentCenter: boolean;
   /** 校历绑定（学习功能子项） */
   bindSchoolCalendar: boolean;
   /** 每日复习提醒（学习功能子项） */

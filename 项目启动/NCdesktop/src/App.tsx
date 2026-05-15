@@ -65,7 +65,8 @@ export default function App() {
       .getState()
       .loadSettings()
       .then(() => {
-        const theme = useSettingsStore.getState().settings.theme;
+        const settings = useSettingsStore.getState().settings;
+        const theme = settings.theme;
         if (theme === "dark") {
           document.documentElement.setAttribute("data-theme", "dark");
         } else if (theme === "light") {
@@ -77,6 +78,14 @@ export default function App() {
           } else {
             document.documentElement.removeAttribute("data-theme");
           }
+        }
+
+        const section = useUIStore.getState().activeSidebarSection;
+        const calendarLocked = !settings.showStudentCenter && section === "calendar";
+        const knowledgeLocked =
+          !settings.showLearningFeatures && (section === "today" || section === "knowledge-hub");
+        if (calendarLocked || knowledgeLocked) {
+          useUIStore.getState().setSidebarSection("recent");
         }
       });
   }, [isDropzone]);

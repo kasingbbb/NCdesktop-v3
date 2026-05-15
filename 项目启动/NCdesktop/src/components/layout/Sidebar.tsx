@@ -1,10 +1,10 @@
-import { Clock, Star, CalendarDays, Network, Sun, Search, Lightbulb, FolderOpen } from "lucide-react";
+import { Clock, Star, CalendarDays, Sun, Search, Lightbulb, FolderOpen } from "lucide-react";
 import { SidebarItem, SidebarSection } from "./SidebarItem";
 import { ProjectTree } from "../features/ProjectTree";
 import { TagTree } from "../features/TagTree";
 import { SidebarFooter } from "./SidebarFooter";
 import { useUIStore } from "../../stores/uiStore";
-import { useEffectiveLearningSettings } from "../../stores/settingsStore";
+import { useFeatureToggles } from "../../stores/settingsStore";
 
 interface SidebarProps {
   width: number;
@@ -14,7 +14,7 @@ interface SidebarProps {
 
 export function Sidebar({ width, onSettingsOpen, onSearchOpen }: SidebarProps) {
   const { activeSidebarSection, setSidebarSection } = useUIStore();
-  const { showLearningFeatures } = useEffectiveLearningSettings();
+  const { showKnowledgeSystem, showStudentCenter } = useFeatureToggles();
 
   return (
     <aside
@@ -67,31 +67,35 @@ export function Sidebar({ width, onSettingsOpen, onSearchOpen }: SidebarProps) {
           active={activeSidebarSection === "starred"}
           onClick={() => setSidebarSection("starred")}
         />
-        <SidebarItem
-          icon={<CalendarDays size={14} />}
-          label="日历"
-          active={activeSidebarSection === "calendar"}
-          onClick={() => setSidebarSection("calendar")}
-        />
-
-        <div className="h-px my-[6px]" style={{ background: "var(--sidebar-divider)" }} />
-        <SidebarSection title="知识系统">
-          {showLearningFeatures && (
-            <SidebarItem
-              icon={<Sun size={14} />}
-              label="今日复习"
-              badge={3}
-              active={activeSidebarSection === "today"}
-              onClick={() => setSidebarSection("today")}
-            />
-          )}
+        {showStudentCenter && (
           <SidebarItem
-            icon={<Lightbulb size={14} />}
-            label="知识库"
-            active={activeSidebarSection === "knowledge-hub"}
-            onClick={() => setSidebarSection("knowledge-hub")}
+            icon={<CalendarDays size={14} />}
+            label="日历"
+            active={activeSidebarSection === "calendar"}
+            onClick={() => setSidebarSection("calendar")}
           />
-        </SidebarSection>
+        )}
+
+        {showKnowledgeSystem && (
+          <>
+            <div className="h-px my-[6px]" style={{ background: "var(--sidebar-divider)" }} />
+            <SidebarSection title="知识系统">
+              <SidebarItem
+                icon={<Sun size={14} />}
+                label="今日复习"
+                badge={3}
+                active={activeSidebarSection === "today"}
+                onClick={() => setSidebarSection("today")}
+              />
+              <SidebarItem
+                icon={<Lightbulb size={14} />}
+                label="知识库"
+                active={activeSidebarSection === "knowledge-hub"}
+                onClick={() => setSidebarSection("knowledge-hub")}
+              />
+            </SidebarSection>
+          </>
+        )}
 
         <div className="h-px my-[6px]" style={{ background: "var(--sidebar-divider)" }} />
         <SidebarSection title="项目">

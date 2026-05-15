@@ -7,13 +7,16 @@ import {
   Headphones,
   Brain,
   Shield,
+  ToggleRight,
 } from "lucide-react";
 import { useSettingsStore } from "../../stores";
+import { useUIStore } from "../../stores/uiStore";
 import { LLMSettingsForm } from "./bridge/LLMSettingsForm";
 import type { AppSettings } from "../../types";
 
 type SettingsTab =
   | "appearance"
+  | "features"
   | "tfcard"
   | "dropzone"
   | "audio"
@@ -22,6 +25,7 @@ type SettingsTab =
 
 const TABS: Array<{ id: SettingsTab; label: string; icon: typeof Palette }> = [
   { id: "appearance", label: "外观", icon: Palette },
+  { id: "features", label: "功能", icon: ToggleRight },
   { id: "tfcard", label: "TF 卡", icon: CreditCard },
   { id: "dropzone", label: "悬浮窗", icon: MonitorSmartphone },
   { id: "audio", label: "音频", icon: Headphones },
@@ -126,6 +130,42 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                   <span className="text-[10px] tabular-nums" style={{ color: "var(--text-tertiary)" }}>
                     {settings.sidebarWidth}px
                   </span>
+                </SettingRow>
+              </div>
+            )}
+
+            {activeTab === "features" && (
+              <div className="space-y-[var(--space-4)]">
+                <h3 className="text-[var(--text-base)] font-semibold" style={{ color: "var(--text-primary)" }}>
+                  功能模块
+                </h3>
+                <p className="text-[var(--text-xs)]" style={{ color: "var(--text-tertiary)" }}>
+                  打开后，对应入口才会出现在左侧栏。默认全部关闭。
+                </p>
+                <SettingRow label="学生中心（日历）">
+                  <ToggleSwitch
+                    checked={settings.showStudentCenter}
+                    onChange={(v) => {
+                      void updateSetting("showStudentCenter", v);
+                      if (!v && useUIStore.getState().activeSidebarSection === "calendar") {
+                        useUIStore.getState().setSidebarSection("recent");
+                      }
+                    }}
+                  />
+                </SettingRow>
+                <SettingRow label="知识系统（今日复习、知识库）">
+                  <ToggleSwitch
+                    checked={settings.showLearningFeatures}
+                    onChange={(v) => {
+                      void updateSetting("showLearningFeatures", v);
+                      if (!v) {
+                        const section = useUIStore.getState().activeSidebarSection;
+                        if (section === "today" || section === "knowledge-hub") {
+                          useUIStore.getState().setSidebarSection("recent");
+                        }
+                      }
+                    }}
+                  />
                 </SettingRow>
               </div>
             )}

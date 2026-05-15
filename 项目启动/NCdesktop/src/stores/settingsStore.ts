@@ -22,6 +22,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   analyticsEnabled: false,
   dataStoragePath: "",
   showLearningFeatures: false,
+  showStudentCenter: false,
   bindSchoolCalendar: false,
   enableDailyReviewReminder: false,
   learningAutoEnableEvaluated: false,
@@ -100,4 +101,18 @@ export function useEffectiveLearningSettings(): {
     bindSchoolCalendar: show ? settings.bindSchoolCalendar : false,
     enableDailyReviewReminder: show ? settings.enableDailyReviewReminder : false,
   };
+}
+
+/** 左侧栏功能模块可见性（默认全 OFF）。
+ *  - showKnowledgeSystem：控制「知识系统」分组（今日复习 + 知识库），复用 showLearningFeatures。
+ *  - showStudentCenter：控制「日历」入口。
+ *
+ *  分别用两个 primitive selector，避免返回新对象触发 zustand getSnapshot 无限循环。 */
+export function useFeatureToggles(): {
+  showKnowledgeSystem: boolean;
+  showStudentCenter: boolean;
+} {
+  const showKnowledgeSystem = useSettingsStore((s) => s.settings.showLearningFeatures);
+  const showStudentCenter = useSettingsStore((s) => s.settings.showStudentCenter);
+  return { showKnowledgeSystem, showStudentCenter };
 }
