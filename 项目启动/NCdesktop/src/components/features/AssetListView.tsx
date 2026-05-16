@@ -542,7 +542,7 @@ export function AssetListView() {
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto bg-[var(--surface-primary)]">
             {viewMode === "list" ? (
-              <ul className="flex flex-col gap-2 p-2">
+              <ul className="flex flex-col gap-1 p-2">
                 {displayAssets.map((a) => {
                   const active = selectedAssetId === a.id;
                   const hint = sourcePathHint(a);
@@ -553,7 +553,7 @@ export function AssetListView() {
                         onClick={(e) => handleCardClick(e, a.id)}
                         onContextMenu={(e) => handleCardContextMenu(e, a.id, "left")}
                         {...makeDragProps(a.id)}
-                        className="w-full text-left px-3 py-2.5 flex items-start gap-2 rounded-[var(--radius-md)] border border-app transition-colors hover:border-[var(--border-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--border-active)] bg-[var(--surface-primary)]"
+                        className="w-full text-left px-2.5 py-1.5 flex items-start gap-1.5 rounded-[var(--radius-md)] border border-app transition-colors hover:border-[var(--border-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--border-active)] bg-[var(--surface-primary)]"
                         style={{
                           background: selectedAssetIds.has(a.id)
                             ? "var(--brand-navy-10)"
@@ -568,10 +568,10 @@ export function AssetListView() {
                       >
                         <span className="shrink-0 mt-0.5">{assetIcon(a, 18)}</span>
                         <span className="min-w-0 flex-1">
-                          <span className="text-[var(--text-sm)] font-medium truncate block" style={{ color: "var(--text-primary)" }} title={originalDisplayName(a)}>
+                          <span className="text-[var(--text-sm)] font-medium truncate block leading-[1.3]" style={{ color: "var(--text-primary)" }} title={originalDisplayName(a)}>
                             {originalDisplayName(a)}
                           </span>
-                          <span className="text-[10px] font-mono tabular-nums mt-0.5 block" style={{ color: "var(--text-secondary)" }}>
+                          <span className="text-[9.5px] font-mono tabular-nums mt-0.5 block" style={{ color: "var(--text-secondary)" }}>
                             导入 {formatImportTime(a.importedAt)}
                           </span>
                         </span>
@@ -646,7 +646,7 @@ export function AssetListView() {
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto bg-[var(--surface-primary)]">
             {viewMode === "list" ? (
-              <div className="flex flex-col p-2 gap-3">
+              <div className="flex flex-col p-2 gap-2">
                 {groupedDisplayAssets.map((group) => (
                   <div key={group.label}>
                     {/* 日期分组头 */}
@@ -664,7 +664,7 @@ export function AssetListView() {
                         {group.items.length} 个 ↑
                       </span>
                     </div>
-                    <ul className="flex flex-col gap-2">
+                    <ul className="flex flex-col gap-1">
                       {group.items.map((a) => {
                         const active = selectedAssetId === a.id;
                         const tagNames = assetTagNamesById[a.id] ?? [];
@@ -685,7 +685,7 @@ export function AssetListView() {
                               onClick={(e) => handleCardClick(e, a.id)}
                               onContextMenu={(e) => handleCardContextMenu(e, a.id, "right")}
                               {...makeDragProps(a.id)}
-                              className="w-full text-left px-3 py-2.5 flex items-start gap-2 rounded-[var(--radius-md)] border border-app transition-colors hover:border-[var(--border-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--border-active)] bg-[var(--surface-primary)]"
+                              className="w-full text-left px-2.5 py-1.5 flex items-start gap-1.5 rounded-[var(--radius-md)] border border-app transition-colors hover:border-[var(--border-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--border-active)] bg-[var(--surface-primary)]"
                               style={{
                                 background: selectedAssetIds.has(a.id)
                                   ? "var(--brand-navy-10)"
@@ -700,7 +700,7 @@ export function AssetListView() {
                               <span className="shrink-0 mt-0.5">{assetIcon(a, 18)}</span>
                               <span className="min-w-0 flex-1">
                                 <span className="flex items-center justify-between gap-2 min-w-0">
-                                  <span className="text-[var(--text-md)] font-medium truncate flex-1 min-w-0" style={{ color: "var(--text-primary)" }} title={a.name}>
+                                  <span className="text-[var(--text-md)] font-medium truncate flex-1 min-w-0 leading-[1.3]" style={{ color: "var(--text-primary)" }} title={a.name}>
                                     {a.name}
                                   </span>
                                   {/* task_011 AC-2：源文件缺失角标 */}
@@ -770,7 +770,7 @@ export function AssetListView() {
                                     </span>
                                   )}
                                 </span>
-                                <span className="text-[10px] font-mono tabular-nums mt-1 block truncate" style={{ color: "var(--text-secondary)" }} title={a.filePath}>
+                                <span className="text-[9.5px] font-mono tabular-nums mt-1 block truncate" style={{ color: "var(--text-secondary)" }} title={a.filePath}>
                                   {kindLabel(assetKind(a))} · {formatBytes(a.fileSize)} · {formatImportTime(a.importedAt)}
                                 </span>
                                 {(() => {
@@ -781,7 +781,7 @@ export function AssetListView() {
                                     : "来源：1 个原件";
                                   return (
                                     <span
-                                      className="text-[10px] mt-0.5 block truncate"
+                                      className="text-[9.5px] mt-0.5 block truncate"
                                       style={{ color: "var(--text-tertiary)" }}
                                       title={label}
                                     >
