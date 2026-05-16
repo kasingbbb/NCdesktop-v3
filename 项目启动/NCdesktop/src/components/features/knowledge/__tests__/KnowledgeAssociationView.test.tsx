@@ -290,10 +290,8 @@ describe("KnowledgeAssociationView — task_perf_02 AC-2 按钮态", () => {
   });
 });
 
-describe("KnowledgeAssociationView — task_perf_02 AC-3 IPC forceFull 透传", () => {
-  it("点击重新扫描时，invoke 被以 forceFull=true 调用 start_concept_extraction", async () => {
-    // 还原 store 真实 startExtraction（前面的 beforeEach mock 掉了 startExtraction
-    // 之外的方法但 startExtraction 本身使用 store 原方法）
+describe("KnowledgeAssociationView — task_perf_04 IPC forceFull 透传（增量默认 + Shift 全量）", () => {
+  it("普通点击重新扫描时，invoke 被以 forceFull=false 调用（增量）", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
     const invokeMock = vi.mocked(invoke);
     invokeMock.mockClear();
@@ -304,7 +302,6 @@ describe("KnowledgeAssociationView — task_perf_02 AC-3 IPC forceFull 透传", 
       status: "completed",
     });
 
-    // 取一份真实 store（含原 startExtraction）—— 把它 patch 回测试 store
     useKnowledgeStore.setState({
       startExtraction: INITIAL_KNOWLEDGE.startExtraction,
       extractionProgress: null,
@@ -315,7 +312,40 @@ describe("KnowledgeAssociationView — task_perf_02 AC-3 IPC forceFull 透传", 
 
     await act(async () => {
       fireEvent.click(btn);
-      // 等待 startExtraction → cmd.extractConceptsForLibrary → invoke 进入 microtask
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(invokeMock).toHaveBeenCalled();
+    const [cmdName, payload] = invokeMock.mock.calls[0];
+    expect(cmdName).toBe("start_concept_extraction");
+    expect(payload).toEqual({
+      libraryId: "lib-1",
+      forceFull: false,
+    });
+  });
+
+  it("Shift+点击重新扫描时，invoke 被以 forceFull=true 调用（强制全量重扫）", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const invokeMock = vi.mocked(invoke);
+    invokeMock.mockClear();
+    invokeMock.mockResolvedValue({
+      totalAssets: 0,
+      processed: 0,
+      conceptsFound: 0,
+      status: "completed",
+    });
+
+    useKnowledgeStore.setState({
+      startExtraction: INITIAL_KNOWLEDGE.startExtraction,
+      extractionProgress: null,
+    });
+
+    render(<KnowledgeAssociationView />);
+    const btn = screen.getByTestId("knowledge-assoc-rescan-button");
+
+    await act(async () => {
+      fireEvent.click(btn, { shiftKey: true });
       await Promise.resolve();
       await Promise.resolve();
     });

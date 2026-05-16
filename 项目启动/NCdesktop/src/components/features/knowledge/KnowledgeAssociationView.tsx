@@ -102,10 +102,14 @@ export function KnowledgeAssociationView() {
   // ── 处理「开始扫描」 ─────────────────────────────────────────────────────
 
   /**
-   * task_perf_02 AC-3：本期"重新扫描"按钮总是强制全量重扫，保持既有
-   * 用户体验。增量扫描（forceFull=false）的 UI 入口（双按钮）放到 P2。
+   * task_perf_04 后续修正（用户反馈：每次都全部扫描）：
+   * - 默认走增量（forceFull=false），仅扫描 `concept_extracted_at IS NULL` 的素材
+   * - 强制全量重扫由 Shift+点击 「重新扫描」 触发（escape hatch；
+   *   完整双按钮 UI 推迟到 P2）
+   * - EmptyState 入口本来就是增量（首次扫描时所有 asset 都是 NULL，
+   *   行为等价于全量）
    */
-  const handleStartScan = (forceFull = true) => {
+  const handleStartScan = (forceFull = false) => {
     setScanStarted(true);
     void startExtraction(libraryId, forceFull);
   };
@@ -212,16 +216,17 @@ export function KnowledgeAssociationView() {
             仅显示关联
           </button>
 
-          {/* 重新扫描（task_perf_02 AC-2：running 时 disabled + 文案"扫描中…" + title） */}
+          {/* 重新扫描（task_perf_02 AC-2：running 时 disabled + 文案"扫描中…" + title）
+              task_perf_04：默认增量；Shift+点击 触发强制全量重扫（escape hatch） */}
           <button
             type="button"
             disabled={isExtracting}
             aria-disabled={isExtracting}
-            onClick={() => handleStartScan(true)}
+            onClick={(e) => handleStartScan(e.shiftKey)}
             title={
               isExtracting
                 ? "已有扫描任务在执行，请等待完成"
-                : "重新全量扫描所有文档"
+                : "仅扫描新文档（跳过已处理）；按住 Shift 点击 = 强制全量重扫所有文档"
             }
             data-testid="knowledge-assoc-rescan-button"
             className="flex items-center gap-[var(--space-1)] px-[var(--space-3)] py-[var(--space-1)] rounded-[var(--radius-md)] text-[var(--text-xs)] transition-colors"
