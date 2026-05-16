@@ -2,9 +2,9 @@
 
 ## 当前状态
 
-- **STATE**: `ACCEPTANCE`（所有 task PASS，等待 PM 验收）
-- **当前 Task**: 无（流水线已完成）
-- **更新时间**: 2026-05-15
+- **STATE**: `ACCEPTANCE_PENDING`（诊断完成，PM 暂停修复决定先试用其他模块）
+- **当前 Task**: 无（等待 PM 进一步试用反馈再决定是否修）
+- **更新时间**: 2026-05-16
 
 ---
 
@@ -117,7 +117,28 @@ task_005 ──┴─► task_006 ──► task_007 ──┘
 
 ## 已知问题 / Blockers
 
-无
+无（**所有 task PASS，验收期发现的 2 个现象经 task_011 诊断均非代码 bug**）
+
+### 验收期诊断结论（task_011，2026-05-15）
+
+完整报告：`sessions/custom_prompt_v1/conductor/tasks/task_011_acceptance_diagnose/output.md`
+
+- **BUG-1「恢复默认无效」→ UX 反馈缺失误报**
+  - reset 链路代码 audit 通过；e2e/unit/contract 测试全绿；DB 无 reset 错误日志
+  - 根因推测：reset 按钮没有 toast 反馈，UI 上瞬间发生但用户感知"没反应"
+  - **状态**：PM 暂停修复（2026-05-16），先观察是否复现
+
+- **BUG-2「自定义"5-电子书"分类没生成新文件夹」→ Mental Model 偏差**
+  - 硬证据：DB 显示用户 para 自定义生效（`is_custom=1`），日志埋点 `user_overridden=true`，但 LLM 仍按 4 类硬约束输出 `topics=3-资源`
+  - 根因：`classify_prompt_v2` 中 category 白名单（"必须且仅能取 1-项目/2-领域/3-资源/4-存档"）是**写死字面**，不在用户可自定义的 `{para_seg}` 占位符内；ADR-003 Layer A 系统压底 GUARD 再次锁定
+  - 这是设计意图：PARA 4 类为闭合枚举，自定义只影响 LLM 在 4 类内的判定思路
+  - **状态**：PM 接受诊断结论（2026-05-16），先尝试用 tagging 模块实现"电子书"诉求
+
+### 暂缓的 UX 改进建议（PM 试用反馈后再决定）
+
+- **若 BUG-1 复现**：PromptCustomizationPanel 加 reset 成功 toast / 短暂高亮（~15 行）
+- **若 PM 反馈仍困惑 PARA 类目**：`PROMPT_MODULE_SUBTITLES.para` 副标题追加"提示：PARA 类目固定 4 类，自定义文本仅影响 LLM 判定思路"（~3 行）
+- **若 PM 提出真实需求**「用户应能扩展 PARA 类目」：**独立 PRD 立项**（涉及 classify_prompt_v2 解约束 / sanitize / UI 配置入口 / 既有目录迁移；M 复杂度起步），不纳入 custom_prompt_v1 修补
 
 ---
 
@@ -160,3 +181,6 @@ task_005 ──┴─► task_006 ──► task_007 ──┘
 [2026-05-15] STATE: DEVELOPING → REVIEWING | Task: task_007_round2 交付 | 原因: Dev 完成全部 9 AC，tsc/测试全绿，仅工作量轻微超阈值（+10%）| 风险: 低
 [2026-05-15] STATE: REVIEWING → ARCHITECTURE_GUARD | Task: task_007_round2 PASS(4.80/5) → 启动 task_010 | 原因: 9/9 AC ✅；Reviewer 独立判定接受工作量偏差（非镀金）；进入 L 复杂度强制的 Architecture Guard 终审 | 风险: 低（终审为扫描，无新代码）
 [2026-05-15] STATE: ARCHITECTURE_GUARD → ACCEPTANCE | Task: task_010 PASS（架构健康 4.83/5）| 原因: 6 维度评分均 4-5；R1~R9 全闭环；PR-4 零污染；实跑全绿（lib 342/342 + e2e 20/20 + tsc 0 error）；0 BLOCKER / 0 WARNING / 4 非阻塞 INFO。流水线终结，等待 PM 验收 | 风险: 无
+[2026-05-15] git commit 02fd72a — "feat: UX 二轮微改 + Architecture Guard 终审（所有 task PASS）"。11 文件 +848 -62。
+[2026-05-15] STATE: ACCEPTANCE → ACCEPTANCE_FIX | Task: task_011_acceptance_diagnose | 原因: PM 手动验收报告 2 现象（"恢复默认无效" + "自定义电子书分类未生成新文件夹"），dispatch 诊断专用 subagent | 风险: 低（诊断阶段，不写代码）
+[2026-05-16] STATE: ACCEPTANCE_FIX → ACCEPTANCE_PENDING | Task: task_011 诊断完成 | 原因: BUG-1 = reset 链路全绿+无错误日志，疑似 UX 反馈缺失误报；BUG-2 = Mental Model 偏差（PARA 是 4 类闭合枚举，硬约束写死在 classify_prompt_v2 不可被 para 自定义覆盖）。PM 决策"暂不修复，先试用其他"。custom_prompt_v1 流水线保持 ACCEPTANCE 接近完成，仅留试用观察口子 | 风险: 无
