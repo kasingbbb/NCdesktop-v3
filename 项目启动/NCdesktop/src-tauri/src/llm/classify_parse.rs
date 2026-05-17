@@ -6,7 +6,14 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClassifyResult {
-    /// PARA 主类别：`1-项目` / `2-领域` / `3-资源` / `4-存档`；无法判定时可为 `other`（见 `prompts::classify_prompt`）
+    /// PARA 主类别：
+    /// - V17 之前：仅允许 `1-项目` / `2-领域` / `3-资源` / `4-存档` / `other`
+    /// - V17 起（custom_para_v1）：允许任意 active 类目 slug、`new:<新类目名>` 请求
+    ///   新建，或 `other` 兜底；最终解析/落盘由
+    ///   `commands::dropzone::resolve_or_create_category` 处理（含 `new:` 前缀剥离、
+    ///   alias 跳转、`sanitize_slug` 规范化、upsert llm_generated 行）。
+    ///
+    /// 本字段保持 `String` 原样不在解析层做枚举校验：normalize 只 trim + 空字符兜底。
     #[serde(default)]
     pub category: String,
     #[serde(default)]

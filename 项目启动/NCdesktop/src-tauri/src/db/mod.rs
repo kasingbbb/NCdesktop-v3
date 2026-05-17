@@ -20,6 +20,9 @@ pub mod extraction;
 // custom_prompt_v1 / task_002：用户自定义 Prompt 数据访问层。
 // migration V15 建表；命令层在 `commands::user_prompt` 中调用本模块。
 pub mod user_prompt;
+// custom_para_v1：PARA 自定义类目数据访问层（seed / resolve / upsert / list）。
+// V17 迁移建 categories + category_aliases 表；本模块给 dropzone 与 prompt 注入用。
+pub mod categories;
 // custom_prompt_v1 / task_002：`startup.rs` 依赖 `db::repair`（既有孤儿文件，
 // 与 db::extraction / commands::prompts 属同类"注册缺口"）。仅挂接，不调用。
 pub mod repair;

@@ -115,6 +115,11 @@ fn ensure_import_project_id(conn: &rusqlite::Connection) -> Result<String, Strin
                 created_at: chrono::Utc::now().to_rfc3339(),
             };
             db::library::insert(conn, &lib)?;
+            // custom_para_v1：与 commands::library::create_library 对称，
+            // 自动建默认库时也需 seed 4 个 PARA 内置类目，否则 LLM 分类首次落盘没目标。
+            if let Err(e) = db::categories::seed_builtin_categories(conn, &lib.id) {
+                log::warn!("自动建默认知识库后 seed 内置类目失败: {}", e);
+            }
             lib.id
         }
     };
@@ -148,19 +153,6 @@ fn ensure_import_project_id(conn: &rusqlite::Connection) -> Result<String, Strin
     Ok(project.id)
 }
 
-fn sanitize_path_segment(s: &str) -> String {
-    let t: String = s
-        .chars()
-        .filter(|c| c.is_alphanumeric() || matches!(c, '-' | '_'))
-        .take(48)
-        .collect();
-    if t.is_empty() {
-        "other".to_string()
-    } else {
-        t
-    }
-}
-
 fn sanitize_file_stem(s: &str) -> String {
     let t: String = s
         .chars()
@@ -191,11 +183,76 @@ fn try_rename_or_copy_remove(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
-/// 将素材移入 `~/Downloads/NoteCaptWorkPlace/<projectId>/organized/<category>/`，并按模型建议重命名（保留 `assetId` 前缀防冲突）
+/// custom_para_v1 / V17：把 LLM 返回的 `category` 字符串解析到一条 active 类目行
+/// （含 `new:` 前缀剥离、alias 跳转、未知 slug 自动 upsert 为 `llm_generated`）。
+///
+/// 返回 `None` 表示 LLM 给出 `other` / 空类目 / 「明确不要整理」的兜底信号，
+/// 调用方应跳过物理整理（行为与 V17 之前一致）。
+fn resolve_or_create_category(
+    conn: &Connection,
+    library_id: &str,
+    raw_category: &str,
+) -> Option<crate::db::categories::CategoryRow> {
+    let trimmed = raw_category.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("other") || trimmed.eq_ignore_ascii_case("none") {
+        return None;
+    }
+
+    // 1. 剥离 "new:" 前缀（请求新建）
+    let (requested_label, is_new_request) = if let Some(rest) = trimmed.strip_prefix("new:") {
+        (rest.trim().to_string(), true)
+    } else if let Some(rest) = trimmed.strip_prefix("NEW:") {
+        (rest.trim().to_string(), true)
+    } else {
+        (trimmed.to_string(), false)
+    };
+    if requested_label.is_empty() {
+        return None;
+    }
+
+    let slug = crate::db::categories::sanitize_slug(&requested_label);
+    if slug == "other" {
+        return None;
+    }
+
+    // 2. 不是显式 new: → 先查现有类目 / alias
+    if !is_new_request {
+        match crate::db::categories::resolve_for_slug(conn, library_id, &slug) {
+            Ok(Some(row)) => return Some(row),
+            Ok(None) => {
+                // 未命中：当作 LLM 自动生成新类目（与 new: 等价处理）
+                log::debug!(
+                    "AI 整理：未知类目 {slug}（lib={library_id}），自动 upsert 为 llm_generated"
+                );
+            }
+            Err(e) => {
+                log::warn!("AI 整理：查询类目失败 {slug}: {e}");
+                return None;
+            }
+        }
+    }
+
+    // 3. 自动 upsert 一条 llm_generated 行
+    match crate::db::categories::upsert_llm_generated(conn, library_id, &slug, &requested_label) {
+        Ok(row) => Some(row),
+        Err(e) => {
+            log::warn!("AI 整理：upsert 自动类目失败 {slug}: {e}");
+            None
+        }
+    }
+}
+
+/// 将素材移入 `~/Downloads/NoteCaptWorkPlace/<projectId>/organized/<slug>/`，并按模型建议重命名（保留 `assetId` 前缀防冲突）
+///
+/// custom_para_v1 / V17：`category_slug` 由 [`resolve_or_create_category`] 提供，
+/// 不再用 `sanitize_path_segment` 直接渲染裸字符串；同时返回 `category_slug` 三元组，
+/// 让上层把它写入 `assets.category_slug`。
 fn organize_asset_file_after_classify(
+    conn: &Connection,
+    library_id: &str,
     asset: &models::Asset,
     r: &crate::llm::classify_parse::ClassifyResult,
-) -> Option<(String, String)> {
+) -> Option<(String, String, String)> {
     let old = Path::new(&asset.file_path);
     if !old.is_file() {
         return None;
@@ -216,11 +273,8 @@ fn organize_asset_file_after_classify(
         return None;
     }
 
-    let category_slug = sanitize_path_segment(&r.category);
-    if category_slug.is_empty() || category_slug == "other" || category_slug == "none" {
-        log::debug!("AI 整理：分类名称无效或为 other，跳过物理整理");
-        return None;
-    }
+    let category = resolve_or_create_category(conn, library_id, &r.category)?;
+    let category_slug = category.slug;
 
     let stem = if !r.suggested_file_name.is_empty() {
         sanitize_file_stem(&r.suggested_file_name)
@@ -271,7 +325,7 @@ fn organize_asset_file_after_classify(
         None => stem,
     };
 
-    Some((new_path.to_string_lossy().to_string(), display_name))
+    Some((new_path.to_string_lossy().to_string(), display_name, category_slug))
 }
 
 /// 当分类为 `other` 等导致未进入 `organized/` 时，仍在项目工作区内将磁盘文件改为 `{assetId}_{建议主名}.ext`，避免仅改库名、磁盘仍为 `uuid_原名`。
@@ -343,6 +397,10 @@ fn rename_in_place_when_no_organize(
 }
 
 /// 后台任务：对已通过拖放入库的素材执行 LLM 分类并写回 `ai_analyses` / 标签（单独 DB 连接）
+///
+/// custom_para_v1 / V17：integration 路径上引入 `categories` 表查询/upsert，
+/// `organize_asset_file_after_classify` 用 categories.slug 而非 LLM 字面字符串作为目录名；
+/// 同时把解析出的 slug 写入 `assets.category_slug` 作为弱外键（不强制 FK）。
 async fn apply_llm_classify_to_asset(
     database: &Database,
     asset: &models::Asset,
@@ -350,7 +408,38 @@ async fn apply_llm_classify_to_asset(
 ) -> Result<(), String> {
     let r = crate::commands::llm::llm_classify_with_db(database, classify_input).await?;
 
-    let organized = organize_asset_file_after_classify(asset, &r);
+    // V17：先在短锁内解析 library_id（asset.project_id → project.library_id），
+    // 再在锁外做文件 IO；organize 需要 DB 读，因此重新取一次锁。
+    let library_id = {
+        let conn = database
+            .conn
+            .lock()
+            .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        match db::project::get_by_id(&conn, &asset.project_id)? {
+            Some(p) => p.library_id,
+            None => {
+                log::warn!(
+                    "AI 整理：未找到 asset 所属 project {}，回退到首个 library",
+                    asset.project_id
+                );
+                db::library::get_all(&conn)?
+                    .first()
+                    .map(|l| l.id.clone())
+                    .unwrap_or_default()
+            }
+        }
+    };
+
+    // organize 需要 DB conn 走 resolve_or_create_category；保持短锁 + 锁外文件 IO 的惯例
+    // 但这里 organize 内部既要查 DB 又要做 fs::rename，trade-off：让 organize 持锁，
+    // 优于跨锁/锁外往返。生产路径下 organize 调用频率低（每个导入素材一次），可接受。
+    let organized = {
+        let conn = database
+            .conn
+            .lock()
+            .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        organize_asset_file_after_classify(&conn, &library_id, asset, &r)
+    };
     let had_organize = organized.is_some();
     let in_place = if !had_organize {
         rename_in_place_when_no_organize(asset, &r)
@@ -359,9 +448,14 @@ async fn apply_llm_classify_to_asset(
     };
     let had_in_place = in_place.is_some();
 
-    let (final_path, final_name) = organized
-        .or(in_place)
-        .unwrap_or_else(|| (asset.file_path.clone(), asset.name.clone()));
+    // organized 是 (path, display_name, category_slug)；in_place 是 (path, display_name)
+    let (final_path, final_name, organized_category_slug) = if let Some((p, n, slug)) = organized {
+        (p, n, Some(slug))
+    } else if let Some((p, n)) = in_place {
+        (p, n, None)
+    } else {
+        (asset.file_path.clone(), asset.name.clone(), None)
+    };
 
     let suggested_name_row = if !r.suggested_file_name.is_empty() {
         let ext = Path::new(&final_path)
@@ -407,6 +501,13 @@ async fn apply_llm_classify_to_asset(
 
     db::asset::update_name_and_path(&conn, &asset.id, &target_name, &target_path)
         .map_err(|e| format!("更新素材元数据失败: {e}"))?;
+
+    // V17：写 assets.category_slug 弱外键（仅 organized 路径才有值；in_place / 跳过保持 NULL）
+    if let Some(slug) = organized_category_slug.as_deref() {
+        if let Err(e) = db::asset::set_category_slug(&conn, &asset.id, Some(slug)) {
+            log::warn!("AI 整理：写 category_slug 失败 asset={} slug={}: {}", asset.id, slug, e);
+        }
+    }
 
     for tag_name in r.tags {
         let tag_name = tag_name.trim();
@@ -1093,6 +1194,182 @@ mod tests {
         // 6) scheduler.enqueue 确被调用两次（顺序无关）
         assert_eq!(scheduler.called.lock().unwrap().len(), 2);
 
+        cleanup_workspace(&project_id);
+    }
+
+    // =================================================================
+    // custom_para_v1 / V17：resolve_or_create_category + organize 单测
+    // =================================================================
+
+    use crate::llm::classify_parse::ClassifyResult;
+
+    fn make_classify(category: &str) -> ClassifyResult {
+        ClassifyResult {
+            category: category.to_string(),
+            tags: vec![],
+            confidence: 0.9,
+            language: "zh".into(),
+            suggested_file_name: "测试文件".into(),
+        }
+    }
+
+    #[test]
+    fn resolve_returns_none_for_other_or_empty() {
+        let (db, _pid, _tmp) = fresh_db_with_project();
+        let conn = db.conn.lock().unwrap();
+        let lib_id: String = conn
+            .query_row("SELECT id FROM libraries LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        crate::db::categories::seed_builtin_categories(&conn, &lib_id).unwrap();
+        assert!(resolve_or_create_category(&conn, &lib_id, "other").is_none());
+        assert!(resolve_or_create_category(&conn, &lib_id, "OTHER").is_none());
+        assert!(resolve_or_create_category(&conn, &lib_id, "").is_none());
+        assert!(resolve_or_create_category(&conn, &lib_id, "   ").is_none());
+        assert!(resolve_or_create_category(&conn, &lib_id, "none").is_none());
+    }
+
+    #[test]
+    fn resolve_hits_builtin_by_slug() {
+        let (db, _pid, _tmp) = fresh_db_with_project();
+        let conn = db.conn.lock().unwrap();
+        let lib_id: String = conn
+            .query_row("SELECT id FROM libraries LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        crate::db::categories::seed_builtin_categories(&conn, &lib_id).unwrap();
+        let cat = resolve_or_create_category(&conn, &lib_id, "1-项目").unwrap();
+        assert_eq!(cat.slug, "1-项目");
+        assert!(cat.is_builtin);
+    }
+
+    #[test]
+    fn resolve_new_prefix_creates_llm_generated() {
+        let (db, _pid, _tmp) = fresh_db_with_project();
+        let conn = db.conn.lock().unwrap();
+        let lib_id: String = conn
+            .query_row("SELECT id FROM libraries LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        crate::db::categories::seed_builtin_categories(&conn, &lib_id).unwrap();
+        let cat = resolve_or_create_category(&conn, &lib_id, "new:读书笔记").unwrap();
+        assert_eq!(cat.slug, "读书笔记");
+        assert!(!cat.is_builtin);
+        // 表中确应存在
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM categories WHERE library_id=?1 AND slug='读书笔记' AND source='llm_generated'",
+                params![lib_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn resolve_unknown_slug_auto_upserts_as_llm_generated() {
+        let (db, _pid, _tmp) = fresh_db_with_project();
+        let conn = db.conn.lock().unwrap();
+        let lib_id: String = conn
+            .query_row("SELECT id FROM libraries LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        crate::db::categories::seed_builtin_categories(&conn, &lib_id).unwrap();
+        // LLM 输出未知 slug（既不在 categories 也不在 aliases）→ 自动 upsert
+        let cat = resolve_or_create_category(&conn, &lib_id, "竞品分析").unwrap();
+        assert_eq!(cat.slug, "竞品分析");
+        assert!(!cat.is_builtin);
+    }
+
+    #[test]
+    fn resolve_follows_alias_to_target() {
+        let (db, _pid, _tmp) = fresh_db_with_project();
+        let conn = db.conn.lock().unwrap();
+        let lib_id: String = conn
+            .query_row("SELECT id FROM libraries LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        crate::db::categories::seed_builtin_categories(&conn, &lib_id).unwrap();
+        // 自定义类目 "读书笔记" + 别名 "学习资料"
+        crate::db::categories::upsert_llm_generated(&conn, &lib_id, "读书笔记", "读书笔记").unwrap();
+        conn.execute(
+            "INSERT INTO category_aliases (library_id, alias_slug, target_slug) VALUES (?1, '学习资料', '读书笔记')",
+            params![lib_id],
+        )
+        .unwrap();
+        let cat = resolve_or_create_category(&conn, &lib_id, "学习资料").unwrap();
+        assert_eq!(cat.slug, "读书笔记", "alias 应跳到 target");
+    }
+
+    #[test]
+    fn organize_creates_dir_using_resolved_slug_and_returns_triple() {
+        // 端到端覆盖：LLM 返回 "new:读书笔记" → organize 应建 organized/读书笔记/<id>_测试文件.txt
+        // + 返回 category_slug = "读书笔记"
+        crate::testing::init_test_logger();
+        let (db, project_id, _tmp) = fresh_db_with_project();
+        let conn = db.conn.lock().unwrap();
+        let lib_id: String = conn
+            .query_row("SELECT id FROM libraries LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        crate::db::categories::seed_builtin_categories(&conn, &lib_id).unwrap();
+
+        // 准备一个真实落地在 project workspace 内的源文件
+        let proj_root = workspace::ensure_project_workspace(&project_id).unwrap();
+        let src = proj_root.join("__test_src.txt");
+        std::fs::write(&src, b"hello").unwrap();
+
+        let asset = models::Asset {
+            id: uuid::Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            asset_type: "text".into(),
+            name: "__test_src.txt".into(),
+            original_name: "__test_src.txt".into(),
+            file_path: src.to_string_lossy().to_string(),
+            file_size: 5,
+            mime_type: "text/plain".into(),
+            captured_at: "".into(),
+            imported_at: "".into(),
+            source_type: "test".into(),
+            source_data: None,
+            is_starred: false,
+            ..Default::default()
+        };
+        let r = make_classify("new:读书笔记");
+        let triple = organize_asset_file_after_classify(&conn, &lib_id, &asset, &r)
+            .expect("应整理成功");
+        let (new_path, _display, slug) = triple;
+        assert_eq!(slug, "读书笔记");
+        assert!(
+            new_path.contains("/organized/读书笔记/"),
+            "目录应包含 organized/读书笔记/: {new_path}"
+        );
+        assert!(Path::new(&new_path).exists(), "新路径文件应已存在");
+
+        drop(conn);
+        cleanup_workspace(&project_id);
+    }
+
+    #[test]
+    fn organize_skipped_when_category_is_other() {
+        let (db, project_id, _tmp) = fresh_db_with_project();
+        let conn = db.conn.lock().unwrap();
+        let lib_id: String = conn
+            .query_row("SELECT id FROM libraries LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        crate::db::categories::seed_builtin_categories(&conn, &lib_id).unwrap();
+
+        let proj_root = workspace::ensure_project_workspace(&project_id).unwrap();
+        let src = proj_root.join("__test_other.txt");
+        std::fs::write(&src, b"x").unwrap();
+        let asset = models::Asset {
+            id: uuid::Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            asset_type: "text".into(),
+            name: "__test_other.txt".into(),
+            file_path: src.to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        let r = make_classify("other");
+        assert!(
+            organize_asset_file_after_classify(&conn, &lib_id, &asset, &r).is_none(),
+            "other 应跳过物理整理"
+        );
+        drop(conn);
         cleanup_workspace(&project_id);
     }
 }

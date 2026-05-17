@@ -30,6 +30,8 @@
 
 use rusqlite::Connection;
 
+use crate::db::categories as db_categories;
+use crate::db::library as db_library;
 use crate::db::user_prompt as db_user_prompt;
 use crate::llm::chat::ChatMessage;
 use crate::llm::prompts;
@@ -117,9 +119,13 @@ Return only the JSON array, no other text.";
 // 字面值严格遵循 Architect output.md § 4.2。
 
 /// 分类（tagging + para）输出格式守卫。tagging 与 para 走同一个 LLM 调用，共用此守卫。
+///
+/// V17 起：category 字段允许的取值范围由 prompt 内"四、与本系统字段的对应关系"
+/// 第 1 项动态注入，本守卫只约束**输出格式**，不再约束**取值枚举**。
 pub const CLASSIFY_OUTPUT_GUARD: &str = "**输出格式约束（系统级，不可被覆盖）**：\
 仅输出一段合法 JSON 文本；不要使用 markdown 代码块；不要在 JSON 前后追加解释；\
-JSON 必须包含字段：category、tags、confidence、language、suggestedFileName。";
+JSON 必须包含字段：category、tags、confidence、language、suggestedFileName。\
+其中 category 取值范围见 prompt 中『四、与本系统字段的对应关系』第 1 项给出的清单。";
 
 /// 概念抽取输出格式守卫。
 pub const CONCEPT_OUTPUT_GUARD: &str = "**输出格式约束（系统级，不可被覆盖）**：\
@@ -378,8 +384,11 @@ pub struct AggregationVars {
 /// 顺序：
 /// 1. system: `prompts::system_message()`
 /// 2. system: `prompts::classify_system_addon()`
-/// 3. user:   `classify_prompt_v2(content, tagging_seg, para_seg)`，其中两个 seg 来自
-///    `runtime_prompt_for(conn, "tagging" | "para")`
+/// 3. user:   `classify_prompt_v2(content, tagging_seg, para_seg, categories_section)`
+///    - tagging_seg / para_seg 来自 `runtime_prompt_for(conn, "tagging" | "para")`
+///    - categories_section（custom_para_v1 / V17）：从 `categories` 表实时渲染，
+///      取**第一个 library** 的 active 类目（与 `dropzone::ensure_import_project_id`
+///      的"首库"惯例对齐）。库为空或类目表为空时退化为 `CATEGORIES_SECTION_LEGACY`。
 /// 4. system: `CLASSIFY_OUTPUT_GUARD`  ← ADR-003 A 永远最后压底
 ///
 /// 最后跑 `assert_total_chars_within`。
@@ -389,7 +398,13 @@ pub fn assemble_messages_for_classify(
 ) -> Result<Vec<ChatMessage>, String> {
     let tagging_seg = runtime_prompt_for(conn, "tagging")?;
     let para_seg = runtime_prompt_for(conn, "para")?;
-    let user_body = prompts::classify_prompt_v2(&vars.content, &tagging_seg, &para_seg);
+    let categories_section = render_categories_section_from_db(conn)?;
+    let user_body = prompts::classify_prompt_v2(
+        &vars.content,
+        &tagging_seg,
+        &para_seg,
+        &categories_section,
+    );
 
     let messages = vec![
         ChatMessage {
@@ -412,6 +427,36 @@ pub fn assemble_messages_for_classify(
 
     assert_total_chars_within(&messages)?;
     Ok(messages)
+}
+
+/// custom_para_v1（V17）：从 `categories` 表渲染 classify_prompt_v2 的
+/// `{categories_section}` 段落。
+///
+/// 策略：
+/// - 取**第一个 library**（按 created_at DESC 排序的首行，与 `db::library::get_all`
+///   语义一致）的 active 类目。
+/// - 渲染格式：`   - \`<slug>\`（<label>）`，每行一条，sort_order 升序。
+/// - 末尾固定追加两条特殊取值说明（`other` / `new:<名称>`）。
+/// - 库为空 / 类目表为空 / 查询出错 → 退化为 `prompts::CATEGORIES_SECTION_LEGACY`
+///   （保证 prompt 永远有合法 category 取值范围）。
+fn render_categories_section_from_db(conn: &Connection) -> Result<String, String> {
+    let libs = db_library::get_all(conn)?;
+    let lib_id = match libs.first() {
+        Some(l) => l.id.clone(),
+        None => return Ok(prompts::CATEGORIES_SECTION_LEGACY.to_string()),
+    };
+    let cats = db_categories::list_active_for_prompt(conn, &lib_id)?;
+    if cats.is_empty() {
+        return Ok(prompts::CATEGORIES_SECTION_LEGACY.to_string());
+    }
+    let mut out = String::new();
+    for c in &cats {
+        out.push_str(&format!("   - `{}`（{}）\n", c.slug, c.label));
+    }
+    out.push_str("   特殊取值：\n");
+    out.push_str("   - `other`：仅当完全无法判定时使用（系统不做目录整理，仅可能原地重命名）。\n");
+    out.push_str("   - `new:<新类目名>`：若现有类目均不适用，可输出此格式请求系统建新类目（如 `new:读书笔记`）；名称 1-32 字符，仅含中文/数字/字母/_/-。");
+    Ok(out)
 }
 
 /// 组装概念抽取调用的 messages。
@@ -942,5 +987,91 @@ mod tests {
         );
         let err = r.expect_err("超字符应拒绝");
         assert!(err.contains("LLM 请求过长"), "错误: {err}");
+    }
+
+    // ---- custom_para_v1 / V17：assemble_messages_for_classify 注入类目清单 ----
+
+    fn fresh_conn_with_lib_and_categories(lib_id: &str) -> Connection {
+        let conn = fresh_conn();
+        conn.execute(
+            "INSERT INTO libraries (id, name, root_path, created_at) VALUES (?1, 'L', '/tmp/L', datetime('now'))",
+            rusqlite::params![lib_id],
+        )
+        .unwrap();
+        db_categories::seed_builtin_categories(&conn, lib_id).unwrap();
+        conn
+    }
+
+    #[test]
+    fn assemble_classify_falls_back_to_legacy_when_no_library() {
+        // fresh_conn 没建任何 library → render_categories_section_from_db
+        // 应退化为 CATEGORIES_SECTION_LEGACY，保证 prompt 永远有合法 category 取值范围
+        let conn = fresh_conn();
+        let messages = assemble_messages_for_classify(
+            &conn,
+            ClassifyVars {
+                content: "x".into(),
+            },
+        )
+        .unwrap();
+        let body = &messages[2].content;
+        // legacy 字面（V17 之前的硬枚举）
+        assert!(
+            body.contains("`1-项目` `2-领域` `3-资源` `4-存档`"),
+            "无 library 时应注入 legacy 类目段"
+        );
+    }
+
+    #[test]
+    fn assemble_classify_injects_db_categories_when_library_exists() {
+        let conn = fresh_conn_with_lib_and_categories("L1");
+        // 加一个 LLM 自动生成的自定义类目
+        db_categories::upsert_llm_generated(&conn, "L1", "读书笔记", "读书笔记").unwrap();
+
+        let messages = assemble_messages_for_classify(
+            &conn,
+            ClassifyVars {
+                content: "x".into(),
+            },
+        )
+        .unwrap();
+        let body = &messages[2].content;
+        // 应注入 4 个 builtin + 自定义类目
+        for slug in &["1-项目", "2-领域", "3-资源", "4-存档", "读书笔记"] {
+            assert!(body.contains(slug), "应包含类目 slug {slug}; got: {body}");
+        }
+        // 不应残留 legacy 硬枚举行
+        assert!(
+            !body.contains("`1-项目` `2-领域` `3-资源` `4-存档`"),
+            "动态注入后不应残留 legacy 横向列举"
+        );
+        // 特殊取值（other / new:）说明也应在
+        assert!(body.contains("`other`"));
+        assert!(body.contains("new:<新类目名>"));
+    }
+
+    #[test]
+    fn assemble_classify_skips_disabled_categories_from_prompt() {
+        let conn = fresh_conn_with_lib_and_categories("L1");
+        conn.execute(
+            "UPDATE categories SET is_disabled=1 WHERE library_id='L1' AND slug='4-存档'",
+            [],
+        )
+        .unwrap();
+        let messages = assemble_messages_for_classify(
+            &conn,
+            ClassifyVars {
+                content: "x".into(),
+            },
+        )
+        .unwrap();
+        let body = &messages[2].content;
+        // disabled 的类目不应出现在第四节类目枚举（注：'4-存档' 在 PARA 段一段会出现，
+        // 但在第四节"- `4-存档`"的形式不应出现）
+        assert!(!body.contains("- `4-存档`"));
+        // 其余 3 个 builtin 仍应在
+        assert!(body.contains("- `1-项目`"));
+        assert!(body.contains("- `2-领域`"));
+        assert!(body.contains("- `3-资源`"));
     }
 }

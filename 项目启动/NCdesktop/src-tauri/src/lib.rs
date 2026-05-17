@@ -263,6 +263,15 @@ pub fn run() {
             commands::user_prompt::get_user_prompt,
             commands::user_prompt::save_user_prompt,
             commands::user_prompt::reset_user_prompt,
+            // custom_para_v1：PARA 自定义类目 CRUD（PR-3 task_012 孤儿代码激活）。
+            // V17 迁移已建表 + 给 dropzone 注入 LLM 自动建逻辑；本期前端尚未接入，
+            // 但 IPC 须暴露，方便后续 UI 直接复用。
+            commands::categories::list_categories,
+            commands::categories::create_category,
+            commands::categories::rename_category,
+            commands::categories::set_category_disabled,
+            commands::categories::delete_category,
+            commands::categories::add_category_alias,
             #[cfg(debug_assertions)]
             source_scan::source_scan_get_missing,
         ])

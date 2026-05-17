@@ -256,6 +256,24 @@ pub fn update_name_and_path(
     Ok(())
 }
 
+/// custom_para_v1 / V17：写入 `assets.category_slug` 弱外键。
+///
+/// 不强制 FK（categories 表为 library 级，跨库无法直接 FK 引用）；
+/// 由 `dropzone::resolve_or_create_category` 保证 slug 已在 `categories` 表存在。
+/// 传入 `None` 表示清空（如分类回退到 `other`，应保持 category_slug 为 NULL）。
+pub fn set_category_slug(
+    conn: &Connection,
+    id: &str,
+    category_slug: Option<&str>,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE assets SET category_slug = ?2 WHERE id = ?1",
+        params![id, category_slug],
+    )
+    .map_err(|e| format!("更新素材 category_slug 失败: {e}"))?;
+    Ok(())
+}
+
 /// 跨项目移动：更新 project_id 与磁盘路径（BatchToolbar"移动到"路径）
 pub fn update_project_and_path(
     conn: &Connection,

@@ -26,3 +26,6 @@ pub mod outbound;
 pub mod source_view;
 // custom_prompt_v1 / task_002：用户自定义 Prompt 4 个 Tauri command。
 pub mod user_prompt;
+// custom_para_v1：PARA 自定义类目 CRUD command（PR-3 task_012 孤儿代码激活）。
+// list/create/rename/disable/delete + add_alias 共 6 个 IPC，本期仅注册不上 UI。
+pub mod categories;

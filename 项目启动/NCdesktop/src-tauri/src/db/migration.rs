@@ -58,6 +58,172 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
         v16_assets_concept_extracted_at(conn)?;
     }
 
+    if current_version < 17 {
+        v17_categories_tables(conn)?;
+    }
+
+    Ok(())
+}
+
+/// V17（custom_para_v1）：激活 PARA 类目自定义（PR-3 task_012 孤儿代码 + 自动建库扩展）。
+///
+/// 设计：复用 `commands/categories.rs` 隐含的 schema（`categories` + `category_aliases` +
+/// `assets.category_slug`），并补充 `source` / `description` / `created_at` / `updated_at`
+/// 列，使 LLM 自动生成的类目（source='llm_generated'）与用户手动建（source='user'）
+/// 在 UI/审计可区分。
+///
+/// 落地内容：
+/// - `categories` 表：(library_id, slug) 唯一；`is_builtin` 标识 4 个 PARA 内置；
+///   `is_disabled` 软删除；`source` 区分 builtin/user/llm_generated。
+/// - `category_aliases` 表：(library_id, alias_slug) 主键；解决 LLM 措辞抖动
+///   （「学习」/「学习资料」/「学习_重点」自动归到同一目标类目）。
+/// - `assets.category_slug` 列：分类落库的弱外键（不强制 FK，避免跨 library
+///   slug 冲突；duplicate column 用 PRAGMA table_info 守卫）。
+/// - 对**已存在的 library** seed 4 个 PARA 内置类目（`1-项目` / `2-领域` /
+///   `3-资源` / `4-存档`），用 `INSERT OR IGNORE` 幂等。
+///
+/// 注意：**新建 library** 时也需 seed，由 `commands::library::create_library` /
+/// `commands::dropzone::ensure_import_project_id` 在 insert library 后调用
+/// `db::categories::seed_builtin_categories`。本迁移只负责"既存库的 backfill"。
+fn v17_categories_tables(conn: &Connection) -> Result<(), String> {
+    // 1. 全新库路径：建表（IF NOT EXISTS）
+    //
+    // 残缺路径（R7）：本地 DB 可能已经从 PR-3 task_012 孤儿代码的早期开发版本
+    // 建过 `categories` / `category_aliases` 表，但**缺 `source` / `description` 列**
+    // （早期 schema 只有 8/9 列；也可能多出 `parent_id` 等已弃用字段）。
+    // 此时 `CREATE TABLE IF NOT EXISTS` 看到表已存在 → no-op，后续 seed INSERT
+    // 因列缺失而 panic。下方 ADD COLUMN 守卫负责补齐缺失列。
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS categories (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            library_id  TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+            slug        TEXT NOT NULL,
+            label       TEXT NOT NULL,
+            icon        TEXT,
+            sort_order  INTEGER NOT NULL DEFAULT 50,
+            is_disabled INTEGER NOT NULL DEFAULT 0,
+            is_builtin  INTEGER NOT NULL DEFAULT 0,
+            source      TEXT NOT NULL DEFAULT 'user',
+            description TEXT NOT NULL DEFAULT '',
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(library_id, slug)
+        );
+        CREATE INDEX IF NOT EXISTS idx_categories_library ON categories(library_id);
+
+        CREATE TABLE IF NOT EXISTS category_aliases (
+            library_id  TEXT NOT NULL,
+            alias_slug  TEXT NOT NULL,
+            target_slug TEXT NOT NULL,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (library_id, alias_slug)
+        );
+        ",
+    )
+    .map_err(|e| format!("V17 迁移失败（建 categories/category_aliases 表）: {e}"))?;
+
+    // 2. 残缺路径：补 categories 表缺失列（仿 V5 / V12 / V16 模式）
+    //
+    // SQLite 限制：ADD COLUMN 的 DEFAULT 必须是常量字面（不能用 datetime('now')），
+    // 因此 created_at / updated_at 若要后补只能 nullable + UPDATE 回填；本期不动
+    // 这两列（生产残缺态已有它们），只补 source / description。
+    let cat_cols = list_table_columns(conn, "categories").unwrap_or_default();
+    if !cat_cols.is_empty() && !cat_cols.iter().any(|c| c == "source") {
+        conn.execute_batch(
+            "ALTER TABLE categories ADD COLUMN source TEXT NOT NULL DEFAULT 'user';",
+        )
+        .map_err(|e| format!("V17 迁移失败（添加 categories.source 列）: {e}"))?;
+        // 修正既有 is_builtin=1 的行：source 应为 'builtin' 而非默认 'user'
+        conn.execute(
+            "UPDATE categories SET source='builtin' WHERE is_builtin=1;",
+            [],
+        )
+        .map_err(|e| format!("V17 迁移失败（修正 builtin 行 source）: {e}"))?;
+        log::info!("V17 残缺路径：已补 categories.source 列 + 修正既有 builtin 行");
+    }
+    if !cat_cols.is_empty() && !cat_cols.iter().any(|c| c == "description") {
+        conn.execute_batch(
+            "ALTER TABLE categories ADD COLUMN description TEXT NOT NULL DEFAULT '';",
+        )
+        .map_err(|e| format!("V17 迁移失败（添加 categories.description 列）: {e}"))?;
+        log::info!("V17 残缺路径：已补 categories.description 列");
+    }
+
+    // 3. assets.category_slug：用 PRAGMA table_info 守卫（仿 V5 / V12 / V16 模式）
+    let existing_cols = list_table_columns(conn, "assets")?;
+    if !existing_cols.iter().any(|c| c == "category_slug") {
+        conn.execute_batch(
+            "ALTER TABLE assets ADD COLUMN category_slug TEXT DEFAULT NULL;",
+        )
+        .map_err(|e| format!("V17 迁移失败（添加 assets.category_slug 列）: {e}"))?;
+    }
+
+    // 对已存在的 library 全量 seed 4 个 PARA 内置类目
+    // 双重防御（仿 V14）：libraries 表若不存在（V11 hotfix 测试人为 fake user_version=10
+    // 但只建了最小 assets 表的残缺路径），跳过 backfill 只推进版本号；
+    // 后续真正建 library 时 commands::library::create_library 会调
+    // db::categories::seed_builtin_categories 完成补偿。
+    let libs_table_ready: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='libraries'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n == 1)
+        .unwrap_or(false);
+
+    let lib_ids: Vec<String> = if libs_table_ready {
+        let mut stmt = conn
+            .prepare("SELECT id FROM libraries")
+            .map_err(|e| format!("V17 迁移失败（查询 libraries 失败）: {e}"))?;
+        let ids = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| format!("V17 迁移失败（遍历 libraries 失败）: {e}"))?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+        ids
+    } else {
+        log::warn!("V17 跳过 backfill：libraries 表未就绪（V1 残缺路径）");
+        Vec::new()
+    };
+    for lib_id in &lib_ids {
+        seed_builtin_categories_impl(conn, lib_id)?;
+    }
+
+    conn.execute_batch("PRAGMA user_version = 17;")
+        .map_err(|e| format!("V17 迁移失败（置版本）: {e}"))?;
+
+    log::info!(
+        "数据库迁移 V17 完成：categories + category_aliases + assets.category_slug; backfill {} libraries",
+        lib_ids.len()
+    );
+    Ok(())
+}
+
+/// V17 内嵌的 seed 实现，避免对 `db::categories` 形成循环依赖
+/// （`db::mod` → `db::categories` → `db::migration` 会产生编译时序问题）。
+/// `db::categories::seed_builtin_categories` 转调本函数。
+pub(super) fn seed_builtin_categories_impl(
+    conn: &Connection,
+    library_id: &str,
+) -> Result<(), String> {
+    const BUILTINS: &[(&str, &str, i64)] = &[
+        ("1-项目", "项目", 10),
+        ("2-领域", "领域", 20),
+        ("3-资源", "资源", 30),
+        ("4-存档", "存档", 40),
+    ];
+    for (slug, label, ord) in BUILTINS {
+        conn.execute(
+            "INSERT OR IGNORE INTO categories
+             (library_id, slug, label, sort_order, is_builtin, source)
+             VALUES (?1, ?2, ?3, ?4, 1, 'builtin')",
+            rusqlite::params![library_id, slug, label, ord],
+        )
+        .map_err(|e| format!("seed builtin 类目失败（lib={library_id} slug={slug}）: {e}"))?;
+    }
     Ok(())
 }
 
@@ -875,13 +1041,14 @@ mod tests {
         assert!(index_exists(&conn, "idx_cm_source"));
         assert!(index_exists(&conn, "idx_cm_derived"));
         assert!(index_exists(&conn, "idx_cm_converted_at"));
-        // V12+V13+V14+V15+V16 紧随 V11 跑完，把 user_version 推到 16。
-        assert_eq!(user_version(&conn), 16);
+        // V12+V13+V14+V15+V16+V17 紧随 V11 跑完，把 user_version 推到 17。
+        // V17 在 libraries 表缺失时走 backfill 跳过分支（仿 V14 双重防御）。
+        assert_eq!(user_version(&conn), 17);
     }
 
-    /// 全新库：V1..V8 + V11..V16 全跑完；包含 user_custom_prompt 与索引；版本=16。
+    /// 全新库：V1..V8 + V11..V17 全跑完；包含 user_custom_prompt 与索引；版本=17。
     #[test]
-    fn fresh_db_runs_all_migrations_to_v16() {
+    fn fresh_db_runs_all_migrations_to_v17() {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).expect("fresh migrations succeed");
 
@@ -926,7 +1093,15 @@ mod tests {
             cols_assets.iter().any(|c| c == "concept_extracted_at"),
             "V16 应已添加 concept_extracted_at 列"
         );
-        assert_eq!(user_version(&conn), 16);
+        // V17：categories / category_aliases 表 + assets.category_slug 列
+        assert!(table_exists(&conn, "categories"));
+        assert!(table_exists(&conn, "category_aliases"));
+        assert!(index_exists(&conn, "idx_categories_library"));
+        assert!(
+            cols_assets.iter().any(|c| c == "category_slug"),
+            "V17 应已添加 assets.category_slug 列"
+        );
+        assert_eq!(user_version(&conn), 17);
     }
 
     /// 幂等：连续两次调用 run_migrations 不报错，版本仍为 16。
@@ -938,14 +1113,188 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).expect("first run succeed");
         run_migrations(&conn).expect("second run should be idempotent");
-        assert_eq!(user_version(&conn), 16);
+        assert_eq!(user_version(&conn), 17);
         assert!(table_exists(&conn, "conversion_meta"));
         assert!(table_exists(&conn, "user_custom_prompt"));
+        assert!(table_exists(&conn, "categories"));
         let cols = list_table_columns(&conn, "conversion_meta").unwrap();
         assert!(cols.iter().any(|c| c == "failure_code"));
-        // V16 列在幂等二跑后仍存在（且未触发 duplicate column）
+        // V16/V17 列在幂等二跑后仍存在（且未触发 duplicate column）
         let cols_assets = list_table_columns(&conn, "assets").unwrap();
         assert!(cols_assets.iter().any(|c| c == "concept_extracted_at"));
+        assert!(cols_assets.iter().any(|c| c == "category_slug"));
+    }
+
+    /// V17 backfill：迁移前若已存在 library，跑完 migration 后该库应自动获得 4 个 PARA 内置类目。
+    #[test]
+    fn v17_backfills_builtin_categories_for_existing_library() {
+        let conn = Connection::open_in_memory().unwrap();
+        // 先跑到 V16：手工建一个 library
+        // 直接跑全 migration 不行（V17 会在迁移内 backfill 空集），先停在 16。
+        v1_initial(&conn).unwrap();
+        v2_asset_original_name(&conn).unwrap();
+        v4_knowledge_understanding(&conn).unwrap();
+        v5_asset_derivative_columns(&conn).unwrap();
+        v6_conversion_meta(&conn).unwrap();
+        v7_pipeline_tasks(&conn).unwrap();
+        v8_extracted_content(&conn).unwrap();
+        v11_conversion_meta_repair(&conn).unwrap();
+        v12_conversion_meta_failure_code(&conn).unwrap();
+        v13_concepts_base_tables(&conn).unwrap();
+        v14_legacy_unverified_backfill(&conn).unwrap();
+        v15_user_custom_prompt(&conn).unwrap();
+        v16_assets_concept_extracted_at(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO libraries (id, name, root_path, created_at) VALUES (?1, 'L', '/tmp/L', datetime('now'))",
+            ["lib_pre_v17"],
+        )
+        .unwrap();
+
+        // 此时 V17 还没跑：categories 表不存在
+        assert!(!table_exists(&conn, "categories"));
+
+        // 跑 V17 dispatcher
+        run_migrations(&conn).expect("run V17");
+
+        assert_eq!(user_version(&conn), 17);
+        let cnt: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM categories WHERE library_id='lib_pre_v17' AND is_builtin=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cnt, 4, "V17 应为既存 library 自动 backfill 4 个内置类目");
+
+        // 4 个 slug 完整且符合 PARA 规约
+        let mut stmt = conn
+            .prepare(
+                "SELECT slug FROM categories WHERE library_id='lib_pre_v17' AND is_builtin=1 ORDER BY sort_order",
+            )
+            .unwrap();
+        let slugs: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(slugs, vec!["1-项目", "2-领域", "3-资源", "4-存档"]);
+    }
+
+    /// V17 残缺路径（R7 风险预案）：模拟生产 DB 上已有 PR-3 task_012 孤儿代码
+    /// 早期版本建过的 `categories` 表（缺 source / description 列），V17 必须用
+    /// ADD COLUMN 补齐缺失列、并修正既有 builtin 行的 source 值，最后 seed 不报错。
+    #[test]
+    fn v17_repairs_legacy_categories_table_missing_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        // 先跑到 V16
+        v1_initial(&conn).unwrap();
+        v2_asset_original_name(&conn).unwrap();
+        v4_knowledge_understanding(&conn).unwrap();
+        v5_asset_derivative_columns(&conn).unwrap();
+        v6_conversion_meta(&conn).unwrap();
+        v7_pipeline_tasks(&conn).unwrap();
+        v8_extracted_content(&conn).unwrap();
+        v11_conversion_meta_repair(&conn).unwrap();
+        v12_conversion_meta_failure_code(&conn).unwrap();
+        v13_concepts_base_tables(&conn).unwrap();
+        v14_legacy_unverified_backfill(&conn).unwrap();
+        v15_user_custom_prompt(&conn).unwrap();
+        v16_assets_concept_extracted_at(&conn).unwrap();
+
+        // 手工建一个 library + 一个 "残缺 schema" 的 categories 表
+        // （字面对应 PR-3 task_012 早期开发版本：缺 source / description，含 parent_id）
+        conn.execute(
+            "INSERT INTO libraries (id, name, root_path, created_at) VALUES ('lib_old', 'L', '/tmp/L', datetime('now'))",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE categories (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                library_id  TEXT NOT NULL,
+                slug        TEXT NOT NULL,
+                label       TEXT NOT NULL,
+                parent_id   INTEGER,
+                icon        TEXT,
+                sort_order  INTEGER NOT NULL DEFAULT 0,
+                is_disabled INTEGER NOT NULL DEFAULT 0,
+                is_builtin  INTEGER NOT NULL DEFAULT 0,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(library_id, slug)
+            );
+            -- 模拟用户在残缺表上已经手动建过 1 个 builtin + 1 个自定义类目
+            INSERT INTO categories (library_id, slug, label, is_builtin)
+                VALUES ('lib_old', '1-项目', '项目', 1),
+                       ('lib_old', '我的笔记', '我的笔记', 0);
+            ",
+        )
+        .unwrap();
+
+        // 跑 V17 dispatcher：应该 ADD COLUMN source/description + UPDATE builtin 行 + 补 seed 剩余 3 个 builtin
+        run_migrations(&conn).expect("V17 应能修复残缺表");
+
+        // 1. 缺失列已补齐
+        let cat_cols = list_table_columns(&conn, "categories").unwrap();
+        assert!(cat_cols.iter().any(|c| c == "source"), "source 列应已补");
+        assert!(cat_cols.iter().any(|c| c == "description"), "description 列应已补");
+
+        // 2. 老的 builtin 行 source 已修正为 'builtin'
+        let old_builtin_source: String = conn
+            .query_row(
+                "SELECT source FROM categories WHERE library_id='lib_old' AND slug='1-项目'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_builtin_source, "builtin", "老 builtin 行应被修正");
+
+        // 3. 老的自定义行 source 仍是默认 'user'
+        let old_user_source: String = conn
+            .query_row(
+                "SELECT source FROM categories WHERE library_id='lib_old' AND slug='我的笔记'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_user_source, "user", "老 user 行 source 不应被覆盖");
+
+        // 4. V17 seed 把剩下 3 个 builtin 补齐（'1-项目' INSERT OR IGNORE 命中已存在跳过）
+        let builtin_cnt: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM categories WHERE library_id='lib_old' AND is_builtin=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(builtin_cnt, 4, "应有 4 个 builtin（老 1 + seed 补 3）");
+
+        assert_eq!(user_version(&conn), 17);
+    }
+
+    /// V17 幂等：二次跑不会因 UNIQUE(library_id, slug) 冲突报错，也不会重复插入。
+    #[test]
+    fn v17_seed_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO libraries (id, name, root_path, created_at) VALUES ('lib_idem', 'L', '/tmp/L', datetime('now'))",
+            [],
+        )
+        .unwrap();
+        // 手动 backfill 该 library 两次
+        seed_builtin_categories_impl(&conn, "lib_idem").unwrap();
+        seed_builtin_categories_impl(&conn, "lib_idem").unwrap();
+        let cnt: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM categories WHERE library_id='lib_idem'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cnt, 4, "二次 seed 应幂等不重复");
     }
 
     /// V16 残缺路径：模拟生产 DB 上 user_version=15 但 concept_extracted_at 列
@@ -961,7 +1310,8 @@ mod tests {
         // 二次 run_migrations 触发 V16 dispatcher，PRAGMA table_info 守卫跳过 ADD COLUMN
         run_migrations(&conn)
             .expect("v16 should be idempotent against existing column");
-        assert_eq!(user_version(&conn), 16);
+        // V17 dispatcher 紧随 V16 跑完，把版本推到 17
+        assert_eq!(user_version(&conn), 17);
         let cols_assets = list_table_columns(&conn, "assets").unwrap();
         assert!(cols_assets.iter().any(|c| c == "concept_extracted_at"));
     }
@@ -978,8 +1328,8 @@ mod tests {
         conn.execute_batch("PRAGMA user_version = 14;").unwrap();
         // 二次 run_migrations 触发 V15 dispatcher，CREATE TABLE IF NOT EXISTS 不报错。
         run_migrations(&conn).expect("v15 should be idempotent against existing table");
-        // V15 跑完后版本被 V16 dispatcher 继续推进到 16（v15 与 v16 串联）。
-        assert_eq!(user_version(&conn), 16);
+        // V15 跑完后版本被 V16+V17 dispatcher 继续推进到 17。
+        assert_eq!(user_version(&conn), 17);
         assert!(table_exists(&conn, "user_custom_prompt"));
     }
 
