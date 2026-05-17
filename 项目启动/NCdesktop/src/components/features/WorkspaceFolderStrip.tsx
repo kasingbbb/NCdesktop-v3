@@ -52,7 +52,7 @@ export function WorkspaceFolderStrip({
       <div className="flex flex-wrap gap-1.5 items-center">
         <button
           type="button"
-          className="text-[10px] px-2 py-1 rounded-full border transition-colors"
+          className="text-[10px] px-2 py-0.5 rounded-full border transition-colors"
           style={{
             borderColor: selectedRelativePath === null ? "var(--border-active)" : "var(--border-primary)",
             background: selectedRelativePath === null ? "var(--sidebar-active-bg)" : "var(--surface-primary)",
@@ -69,7 +69,7 @@ export function WorkspaceFolderStrip({
             <div key={f.relativePath} className="inline-flex items-center gap-0.5">
               <button
                 type="button"
-                className="text-[10px] px-2 py-1 rounded-full border transition-colors max-w-[200px] truncate"
+                className="text-[10px] px-2 py-0.5 rounded-full border transition-colors max-w-[200px] truncate"
                 style={{
                   borderColor: active ? "var(--border-active)" : "var(--border-primary)",
                   background: active ? "var(--sidebar-active-bg)" : "var(--surface-primary)",

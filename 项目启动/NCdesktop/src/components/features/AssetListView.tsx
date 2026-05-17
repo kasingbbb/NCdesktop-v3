@@ -542,10 +542,11 @@ export function AssetListView() {
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto bg-[var(--surface-primary)]">
             {viewMode === "list" ? (
-              <ul className="flex flex-col gap-1 p-2">
+              <ul className="flex flex-col gap-0 p-1">
                 {displayAssets.map((a) => {
                   const active = selectedAssetId === a.id;
                   const hint = sourcePathHint(a);
+                  const isSelected = selectedAssetIds.has(a.id);
                   return (
                     <li key={a.id}>
                       <button
@@ -553,27 +554,33 @@ export function AssetListView() {
                         onClick={(e) => handleCardClick(e, a.id)}
                         onContextMenu={(e) => handleCardContextMenu(e, a.id, "left")}
                         {...makeDragProps(a.id)}
-                        className="w-full text-left px-2.5 py-1.5 flex items-start gap-1.5 rounded-[var(--radius-md)] border border-app transition-colors hover:border-[var(--border-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--border-active)] bg-[var(--surface-primary)]"
+                        className="w-full text-left px-2 py-1 flex items-center gap-2 rounded-[6px] border border-transparent transition-colors hover:bg-[var(--surface-secondary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--border-active)] bg-transparent"
                         style={{
-                          background: selectedAssetIds.has(a.id)
+                          borderBottom: "1px solid var(--surface-tertiary)",
+                          background: isSelected
                             ? "var(--brand-navy-10)"
                             : active
                             ? "var(--sidebar-active-bg)"
                             : undefined,
-                          outline: selectedAssetIds.has(a.id)
+                          outline: isSelected
                             ? "2px solid var(--brand-navy)"
                             : undefined,
                         }}
                         title={hint ? `原件路径：${hint}` : originalDisplayName(a)}
                       >
-                        <span className="shrink-0 mt-0.5">{assetIcon(a, 18)}</span>
-                        <span className="min-w-0 flex-1">
-                          <span className="text-[var(--text-sm)] font-medium truncate block leading-[1.3]" style={{ color: "var(--text-primary)" }} title={originalDisplayName(a)}>
-                            {originalDisplayName(a)}
-                          </span>
-                          <span className="text-[9.5px] font-mono tabular-nums mt-0.5 block" style={{ color: "var(--text-secondary)" }}>
-                            导入 {formatImportTime(a.importedAt)}
-                          </span>
+                        <span className="shrink-0">{assetIcon(a, 14)}</span>
+                        <span
+                          className="text-[12.5px] font-medium truncate flex-1 min-w-0 leading-[1.3]"
+                          style={{ color: "var(--text-primary)" }}
+                          title={originalDisplayName(a)}
+                        >
+                          {originalDisplayName(a)}
+                        </span>
+                        <span
+                          className="text-[10px] font-mono tabular-nums shrink-0"
+                          style={{ color: "var(--text-secondary)", opacity: 0.6 }}
+                        >
+                          {formatImportTime(a.importedAt)}
                         </span>
                       </button>
                     </li>
@@ -646,11 +653,11 @@ export function AssetListView() {
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto bg-[var(--surface-primary)]">
             {viewMode === "list" ? (
-              <div className="flex flex-col p-2 gap-2">
+              <div className="flex flex-col p-1 gap-2">
                 {groupedDisplayAssets.map((group) => (
                   <div key={group.label}>
                     {/* 日期分组头 */}
-                    <div className="flex items-center justify-between px-1 mb-1.5">
+                    <div className="flex items-center justify-between px-1 mb-1">
                       <span
                         className="text-[11px] font-semibold"
                         style={{ color: "var(--text-secondary)" }}
@@ -664,7 +671,7 @@ export function AssetListView() {
                         {group.items.length} 个 ↑
                       </span>
                     </div>
-                    <ul className="flex flex-col gap-1">
+                    <ul className="flex flex-col gap-0">
                       {group.items.map((a) => {
                         const active = selectedAssetId === a.id;
                         const tagNames = assetTagNamesById[a.id] ?? [];
@@ -673,6 +680,13 @@ export function AssetListView() {
                         const state = a.state;
                         // task_011 AC-2 / AC-4
                         const sourceMissing = a.sourceMissing === true;
+                        const isSelected = selectedAssetIds.has(a.id);
+                        const sourceId = a.sourceAssetId;
+                        const sourceAsset = sourceId ? assetsById.get(sourceId) : null;
+                        const convertedFrom = sourceAsset
+                          ? `转换自 ${originalDisplayName(sourceAsset)}`
+                          : null;
+                        const metaText = `${kindLabel(assetKind(a))} · ${formatBytes(a.fileSize)} · ${formatImportTime(a.importedAt)}${convertedFrom ? ` · ${convertedFrom}` : ""}`;
                         return (
                           <li
                             key={a.id}
@@ -685,22 +699,24 @@ export function AssetListView() {
                               onClick={(e) => handleCardClick(e, a.id)}
                               onContextMenu={(e) => handleCardContextMenu(e, a.id, "right")}
                               {...makeDragProps(a.id)}
-                              className="w-full text-left px-2.5 py-1.5 flex items-start gap-1.5 rounded-[var(--radius-md)] border border-app transition-colors hover:border-[var(--border-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--border-active)] bg-[var(--surface-primary)]"
+                              className="w-full text-left px-2 py-1 flex items-center gap-2 rounded-[6px] border border-transparent transition-colors hover:bg-[var(--surface-secondary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--border-active)] bg-transparent"
                               style={{
-                                background: selectedAssetIds.has(a.id)
+                                borderBottom: "1px solid var(--surface-tertiary)",
+                                background: isSelected
                                   ? "var(--brand-navy-10)"
                                   : active
                                   ? "var(--sidebar-active-bg)"
                                   : undefined,
-                                outline: selectedAssetIds.has(a.id)
+                                outline: isSelected
                                   ? "2px solid var(--brand-navy)"
                                   : undefined,
                               }}
                             >
-                              <span className="shrink-0 mt-0.5">{assetIcon(a, 18)}</span>
-                              <span className="min-w-0 flex-1">
-                                <span className="flex items-center justify-between gap-2 min-w-0">
-                                  <span className="text-[var(--text-md)] font-medium truncate flex-1 min-w-0 leading-[1.3]" style={{ color: "var(--text-primary)" }} title={a.name}>
+                              <span className="shrink-0">{assetIcon(a, 14)}</span>
+                              <span className="min-w-0 flex-1 flex flex-col gap-[1px]">
+                                {/* Row 1: name + 状态徽章 */}
+                                <span className="flex items-center gap-1.5 min-w-0">
+                                  <span className="text-[12.5px] font-medium truncate flex-1 min-w-0 leading-[1.3]" style={{ color: "var(--text-primary)" }} title={a.name}>
                                     {a.name}
                                   </span>
                                   {/* task_011 AC-2：源文件缺失角标 */}
@@ -746,9 +762,14 @@ export function AssetListView() {
                                     </span>
                                   ) : null}
                                 </span>
-                                <span className="flex flex-wrap items-center gap-1.5 mt-1">
+                                {/* Row 2: 标签 + 元信息单行（含 转换自） */}
+                                <span
+                                  className="flex items-center gap-1 min-w-0 whitespace-nowrap overflow-hidden text-[9.5px] leading-[1.3]"
+                                  style={{ color: "var(--text-tertiary)" }}
+                                  title={a.filePath}
+                                >
                                   {cat ? (
-                                    <span className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-[var(--radius-full)] bg-[var(--color-accent-soft)] border border-app" style={{ color: "var(--text-secondary)" }}>
+                                    <span className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0 rounded-[var(--radius-full)] bg-[var(--color-accent-soft)] border border-app shrink-0" style={{ color: "var(--text-secondary)" }}>
                                       <FolderOpen size={10} />
                                       {cat}
                                     </span>
@@ -756,39 +777,26 @@ export function AssetListView() {
                                   {tagNames.slice(0, 3).map((tn) => (
                                     <span
                                       key={tn}
-                                      className="tag-pill !text-[10px] !px-1.5 !py-0.5"
+                                      className="tag-pill shrink-0"
                                     >
                                       {tn}
                                     </span>
                                   ))}
                                   {tagNames.length > 3 && (
-                                    <span
-                                      className="text-[10px] px-1 py-0.5 rounded-[var(--radius-full)]"
-                                      style={{ color: "var(--text-tertiary)" }}
-                                    >
+                                    <span className="shrink-0" style={{ color: "var(--text-tertiary)" }}>
                                       +{tagNames.length - 3}
                                     </span>
                                   )}
+                                  {(cat || tagNames.length > 0) ? (
+                                    <span className="shrink-0 opacity-50">·</span>
+                                  ) : null}
+                                  <span
+                                    className="font-mono tabular-nums truncate min-w-0"
+                                    style={{ color: "var(--text-tertiary)" }}
+                                  >
+                                    {metaText}
+                                  </span>
                                 </span>
-                                <span className="text-[9.5px] font-mono tabular-nums mt-1 block truncate" style={{ color: "var(--text-secondary)" }} title={a.filePath}>
-                                  {kindLabel(assetKind(a))} · {formatBytes(a.fileSize)} · {formatImportTime(a.importedAt)}
-                                </span>
-                                {(() => {
-                                  const sourceId = a.sourceAssetId;
-                                  const source = sourceId ? assetsById.get(sourceId) : null;
-                                  const label = source
-                                    ? `转换自 ${originalDisplayName(source)}`
-                                    : "来源：1 个原件";
-                                  return (
-                                    <span
-                                      className="text-[9.5px] mt-0.5 block truncate"
-                                      style={{ color: "var(--text-tertiary)" }}
-                                      title={label}
-                                    >
-                                      {label}
-                                    </span>
-                                  );
-                                })()}
                               </span>
                             </button>
                           </li>
