@@ -20,7 +20,6 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Asset } from "../types";
 import {
   parseOutboundError,
-  type OutboundEntry,
   type OutboundError,
 } from "../lib/tauri-commands";
 import { useUIStore } from "../stores/uiStore";
@@ -77,8 +76,6 @@ export function useDragAssets(
     startX: number;
     startY: number;
     ids: string[];
-    /** mousedown 时 kick off 的 outbound payload Promise（含错误） */
-    payloadPromise: Promise<OutboundEntry[]>;
   } | null>(null);
   const isDraggingRef = useRef(false);
   const dragIconRef = useRef<string>("");
@@ -129,22 +126,25 @@ export function useDragAssets(
             ? Array.from(selectedRef.current)
             : [assetId];
 
-          // 立即在 user gesture 上下文 kick off IPC（task_008 AC-3 关键时序）
-          const payloadPromise = invoke<OutboundEntry[]>(
-            "prepare_outbound_payload",
-            { assetIds: ids }
-          );
-          // 必须挂一个 catch 防止 unhandled rejection；真正消费在阈值跨过之后
-          payloadPromise.catch(() => {
-            /* swallow here; handled when threshold crossed or discarded on click */
-          });
+          // 2026-05-17 修复 release 拖到 Finder 完全无反应：
+          //
+          // 旧实现：mousedown → invoke prepare_outbound_payload → 等 IPC + DB IO + hard_link
+          //  → mousemove threshold → 跨 main thread → 合成 mouseDragged → beginDraggingSession。
+          // 整条链路跨越 50~150ms，macOS NSApp.currentEvent() 已不再是用户的 mouseDown 事件，
+          // user gesture context 丢失，NSDraggingSession 被 macOS silent reject
+          // （drag crate 是 fire-and-forget，错误根本到不了前端）。
+          //
+          // 新实现：mousedown 不调任何 IPC，仅记 ids；mousemove threshold 后直接
+          // startDrag(原文件 path)。完全模拟原来 fallback 路径的成功链路（dev mode 测过 OK）。
+          // 牺牲：outbound markdown 投影功能（拖 .md 到 Notion/Claude），用户后续若需要
+          // 可通过"分享"按钮触发；核心 use case 拖原文件到 Finder/外部文件夹稳定可用。
+          console.warn(`[drag] mousedown ids=${ids.length} (first=${ids[0]})`);
 
           pendingDragRef.current = {
             assetId,
             startX: e.clientX,
             startY: e.clientY,
             ids,
-            payloadPromise,
           };
           isDraggingRef.current = false;
 
@@ -164,41 +164,30 @@ export function useDragAssets(
             pendingDragRef.current = null;
             cleanup();
 
-            const fallbackPaths = pending.ids
+            const paths = pending.ids
               .map((id) => assetsRef.current.find((a) => a.id === id)?.filePath)
               .filter((p): p is string => !!p);
 
-            pending.payloadPromise
-              .then((entries) => {
-                const paths =
-                  entries && entries.length > 0
-                    ? entries.map((e) => e.path)
-                    : fallbackPaths;
-                if (paths.length === 0) return;
-                return startDrag({
-                  item: paths,
-                  icon: dragIconRef.current,
-                  mode: "copy",
-                });
-              })
+            console.warn(
+              `[drag] threshold crossed → startDrag(direct, no-IPC) count=${paths.length} icon=${dragIconRef.current ? "set" : "empty"} first=${paths[0]}`
+            );
+            if (paths.length === 0) {
+              console.warn(`[drag] aborted: no asset.filePath available`);
+              return;
+            }
+            startDrag({
+              item: paths,
+              icon: dragIconRef.current,
+              mode: "copy",
+            })
+              .then(() => console.warn(`[drag] startDrag resolved OK`))
               .catch((err) => {
-                // 非 done / mixed / renditionMissing 等：静默回退到原件路径，
-                // 让任意素材都能拖出到外部文件夹（task: bug #4）。
-                console.warn("[drag] outbound payload unavailable, fallback to source:", err);
-                if (fallbackPaths.length === 0) {
-                  toast(err);
-                  return;
-                }
-                void startDrag({
-                  item: fallbackPaths,
-                  icon: dragIconRef.current,
-                  mode: "copy",
-                });
+                console.error(`[drag] startDrag REJECTED:`, err);
+                toast(err);
               });
           }
 
           function onMouseUp() {
-            // 用户点击未触发拖拽：丢弃 payload promise（已挂 catch 不会泄漏）
             pendingDragRef.current = null;
             isDraggingRef.current = false;
             cleanup();

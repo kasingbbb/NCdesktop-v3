@@ -33,13 +33,15 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_drag::init())
         .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
+            // release build 也启用 log（之前仅 debug 启用导致生产 binary 无任何
+            // 日志写入 NoteCapt.log，所有线上排查全部失明 —— 见拖拽诊断 2026-05-17）。
+            // tauri-plugin-log 的 default targets 包含 LogDir + Stdout，对 release
+            // 用户体验无副作用。
+            app.handle().plugin(
+                tauri_plugin_log::Builder::default()
+                    .level(log::LevelFilter::Info)
+                    .build(),
+            )?;
 
             let app_data_dir = app
                 .path()

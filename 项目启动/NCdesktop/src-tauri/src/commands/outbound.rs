@@ -204,15 +204,33 @@ fn outbound_dir_for(cache_root: &Path, asset_id: &str) -> PathBuf {
     cache_root.join(CACHE_SUBDIR).join(asset_id)
 }
 
-/// 对外的纯路径解算助手（task_006 M6 删除级联引用）：根据系统缓存根 +
-/// `asset_id` 拼出该 asset 的 outbound 缓存目录，返回 `None` 表示
-/// `dirs_next::cache_dir()` 在当前平台无法定位（兜底由调用方决定是否 warn）。
+/// 对外的纯路径解算助手（task_006 M6 删除级联引用）：根据 outbound root +
+/// `asset_id` 拼出该 asset 的 outbound 缓存目录。
+///
+/// **outbound root 选型（2026-05-17 修订）**：从 `dirs_next::cache_dir()`
+/// （`~/Library/Caches/`）改到 [`std::env::temp_dir()`]（macOS 上是
+/// `/var/folders/.../T/`）。
+///
+/// 原因：macOS Finder 对 `~/Library/Caches/` 子树启用"hidden / system dir"
+/// 沙盒过滤 —— `startDrag` 即便启动了 NSDraggingSession，目标 path 在
+/// Caches 下时 Finder 直接拒收，用户连鼠标的"+"图标都看不到。
+/// 用 user 自己手动从 Finder 拖 cache 文件到桌面也是同样被拒（验证于
+/// 2026-05-17 release 拖拽诊断）。
+///
+/// `std::env::temp_dir()` 满足两个核心条件：
+/// - **user-accessible**：Finder 能正常拖出
+/// - **临时语义一致**：OS 重启后清理，与原 cache 语义对齐
 ///
 /// **无 IO**：不创建 / 不删除，仅 path-only 拼接，供 [`commands::asset::delete_asset`]
 /// 触发 `fs::remove_dir_all` 时复用，避免 M4 与 M6 之间出现路径口径漂移。
 pub fn outbound_cache_dir_for(asset_id: &str) -> Option<PathBuf> {
-    let cache_root = dirs_next::cache_dir()?;
-    Some(outbound_dir_for(&cache_root, asset_id))
+    Some(outbound_dir_for(&outbound_root_dir(), asset_id))
+}
+
+/// outbound 落盘根目录。见 [`outbound_cache_dir_for`] 注释中关于
+/// `cache_dir → temp_dir` 切换的设计依据。
+fn outbound_root_dir() -> PathBuf {
+    std::env::temp_dir()
 }
 
 /// 幂等清理 + 重建单条 asset 的 outbound 缓存目录。
@@ -293,6 +311,11 @@ pub async fn prepare_outbound_payload(
     database: State<'_, Database>,
     asset_ids: Vec<String>,
 ) -> Result<Vec<OutboundEntry>, String> {
+    log::info!(
+        "[outbound] prepare_outbound_payload 调用：{} 个 asset_id（前 3 个：{:?}）",
+        asset_ids.len(),
+        asset_ids.iter().take(3).collect::<Vec<_>>(),
+    );
     if asset_ids.is_empty() {
         return Err(OutboundError::EmptyInput {
             message: "未选择任何素材".to_string(),
@@ -302,10 +325,16 @@ pub async fn prepare_outbound_payload(
 
     // 1. 拿 join 行：通过 root asset 找到 project_id，再调 list_root_assets。
     //    多选若跨 project 同样支持（按 project_id 分组查询）。
-    let inputs = collect_state_inputs(&database, &asset_ids).map_err(|e| e.to_json())?;
+    let inputs = collect_state_inputs(&database, &asset_ids).map_err(|e| {
+        log::warn!("[outbound] collect_state_inputs 失败：{}", e.to_json());
+        e.to_json()
+    })?;
 
     // 2. 状态校验（AC-5：单选 / 多选 / 顺序与 input.md 对齐）
-    classify_state(&inputs).map_err(|e| e.to_json())?;
+    classify_state(&inputs).map_err(|e| {
+        log::warn!("[outbound] classify_state 拒绝：{}", e.to_json());
+        e.to_json()
+    })?;
 
     // 3. rendition 存在性（DB + 磁盘），任何一条缺失 → RenditionMissing
     for input in &inputs {
@@ -321,15 +350,10 @@ pub async fn prepare_outbound_payload(
         }
     }
 
-    // 4. 缓存根：dirs_next::cache_dir 在 macOS / Linux 上必有 Some。
-    let cache_root = dirs_next::cache_dir().ok_or_else(|| {
-        OutboundError::IoFailed {
-            asset_id: None,
-            detail: "dirs_next::cache_dir() 返回 None".to_string(),
-            message: "无法定位系统缓存目录".to_string(),
-        }
-        .to_json()
-    })?;
+    // 4. outbound 落盘根：用 std::env::temp_dir() 而非 dirs_next::cache_dir()
+    //    （见 outbound_cache_dir_for 注释：macOS Finder 拒绝从 ~/Library/Caches 拖文件）。
+    //    temp_dir 在 macOS 是 /var/folders/.../T/，user-accessible，Finder 能正常拖。
+    let cache_root = outbound_root_dir();
 
     // 5. 投影到缓存目录
     let mut out = Vec::with_capacity(inputs.len());
@@ -370,6 +394,11 @@ pub async fn prepare_outbound_payload(
         });
     }
 
+    log::info!(
+        "[outbound] prepare_outbound_payload 成功：{} 个 entry（首条 path={}）",
+        out.len(),
+        out.first().map(|e| e.path.as_str()).unwrap_or("<empty>"),
+    );
     Ok(out)
 }
 

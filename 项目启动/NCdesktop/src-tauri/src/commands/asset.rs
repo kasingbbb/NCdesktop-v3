@@ -509,11 +509,19 @@ pub fn get_drag_icon_path(app: tauri::AppHandle) -> Result<String, String> {
             .join("32x32.png");
         Ok(path.to_string_lossy().to_string())
     } else {
+        // 2026-05-17 修复 release 拖到 Finder 完全无反应（root cause）：
+        // Tauri 把 bundle.icon 配置里的所有 PNG 打包成 Resources/icon.icns
+        // （macOS 标准），并 **不** 把原 PNG 复制到 Resources/icons/，因此
+        // `resource_dir/icons/32x32.png` 在 release 永远不存在。
+        // drag crate macOS impl 收到不存在的 image path → Error::ImageNotFound
+        // → startDrag silent reject → NSDraggingSession 不启动 → Finder 看不到拖拽。
+        // 修复：用 Resources/icon.icns（Tauri 一定会打入），
+        // NSImage::initByReferencingFile 支持 .icns 格式。
         let resource_dir = app
             .path()
             .resource_dir()
             .map_err(|e| format!("resource_dir 失败: {e}"))?;
-        let path = resource_dir.join("icons").join("32x32.png");
+        let path = resource_dir.join("icon.icns");
         Ok(path.to_string_lossy().to_string())
     }
 }
