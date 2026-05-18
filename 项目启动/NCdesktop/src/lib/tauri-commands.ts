@@ -893,3 +893,54 @@ export interface KnowledgeGraphData {
 export async function getKnowledgeGraph(libraryId: string): Promise<KnowledgeGraphData> {
   return invoke<KnowledgeGraphData>("get_knowledge_graph", { libraryId });
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// TEMPORARY STUBS — skill IPC 链路在 main 上未接通（commit 184c6c0d 引入
+// 后端 commands/skills.rs + commands/skill_mcp.rs 与 SkillsView UI，但漏掉
+// 了 commands/mod.rs 注册、lib.rs invoke_handler 挂载、以及本文件 wrapper）。
+// 临时给 10 个函数 + 4 个类型 stub，让 vite build 通过；运行时调用会 throw
+// （DMG 里不点 skill 入口即可）。修复时按 getKnowledgeGraph 风格手写真正
+// 的 invoke wrapper 并删除本节。
+// ────────────────────────────────────────────────────────────────────────────
+
+export type Skill = unknown;
+export type SkillChallenge = unknown;
+export type SkillEvaluation = unknown;
+export type McpServerStatus = unknown;
+
+const SKILL_IPC_NOT_WIRED = (name: string): never => {
+  throw new Error(
+    `skill IPC "${name}" not wired in main; see commands/skills.rs + lib.rs invoke_handler`,
+  );
+};
+
+export async function skillGetList(_libraryId?: string): Promise<Skill[]> {
+  return SKILL_IPC_NOT_WIRED("skillGetList");
+}
+export async function skillAutoAggregate(_libraryId?: string): Promise<unknown> {
+  return SKILL_IPC_NOT_WIRED("skillAutoAggregate");
+}
+export async function skillComputeProgress(_skillId?: string): Promise<unknown> {
+  return SKILL_IPC_NOT_WIRED("skillComputeProgress");
+}
+export async function skillGenerateChallenge(_skillId?: string): Promise<SkillChallenge> {
+  return SKILL_IPC_NOT_WIRED("skillGenerateChallenge");
+}
+export async function skillEvaluateAnswer(_args?: unknown): Promise<SkillEvaluation> {
+  return SKILL_IPC_NOT_WIRED("skillEvaluateAnswer");
+}
+export async function skillExportPackage(_skillId?: string): Promise<unknown> {
+  return SKILL_IPC_NOT_WIRED("skillExportPackage");
+}
+export async function skillGetMcpConfig(_skillId?: string): Promise<unknown> {
+  return SKILL_IPC_NOT_WIRED("skillGetMcpConfig");
+}
+export async function skillGetMcpServerStatus(_skillId?: string): Promise<McpServerStatus> {
+  return SKILL_IPC_NOT_WIRED("skillGetMcpServerStatus");
+}
+export async function skillStartMcpServer(_skillId?: string): Promise<unknown> {
+  return SKILL_IPC_NOT_WIRED("skillStartMcpServer");
+}
+export async function skillStopMcpServer(_skillId?: string): Promise<unknown> {
+  return SKILL_IPC_NOT_WIRED("skillStopMcpServer");
+}
