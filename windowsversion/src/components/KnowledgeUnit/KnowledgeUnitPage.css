@@ -1,0 +1,580 @@
+/* KnowledgeUnitPage — 渐进式学习页样式 */
+
+@keyframes kup-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.kup-spin { animation: kup-spin 1s linear infinite; }
+
+/* ── 根布局 ─────────────────────────────────────────────────────────────────── */
+
+.kup-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--surface-canvas);
+  overflow: hidden;
+}
+
+.kup-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-tertiary);
+}
+
+/* ── 顶部导航栏 ─────────────────────────────────────────────────────────────── */
+
+.kup-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-6);
+  background: var(--surface-primary);
+  border-bottom: 1px solid var(--border-primary);
+  flex-shrink: 0;
+}
+
+.kup-back-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  transition: background 0.12s;
+}
+
+.kup-back-btn:hover {
+  background: var(--surface-secondary);
+  color: var(--text-primary);
+}
+
+.kup-status-badge {
+  font-size: var(--text-xs);
+  font-weight: 500;
+  padding: 3px var(--space-3);
+  border-radius: var(--radius-full);
+  background: var(--surface-secondary);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+.kup-status-synthesized { color: var(--color-warning); }
+.kup-status-understood  { color: var(--color-info); }
+.kup-status-articulated { color: var(--color-accent); }
+.kup-status-validated, .kup-status-consolidated { color: var(--color-success); }
+.kup-status-mastered    { color: var(--brand-gold); }
+
+/* ── 来源声明横幅 ───────────────────────────────────────────────────────────── */
+
+.kup-transparency-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-6);
+  background: var(--color-accent-soft);
+  border-bottom: 1px solid rgba(59,130,246,0.15);
+  font-size: var(--text-xs);
+  color: var(--color-accent-dark);
+  flex-shrink: 0;
+}
+
+/* ── 新素材过期横幅（Step 8）────────────────────────────────────────────────── */
+
+.kup-staleness-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-6);
+  background: rgba(234, 179, 8, 0.08);
+  border-bottom: 1px solid rgba(234, 179, 8, 0.25);
+  font-size: var(--text-xs);
+  color: var(--color-warning);
+  flex-shrink: 0;
+}
+
+.kup-staleness-regen {
+  margin-left: auto;
+  font-size: var(--text-xs);
+  color: var(--color-warning);
+  background: none;
+  border: 1px solid var(--color-warning);
+  border-radius: var(--radius-sm);
+  padding: 2px var(--space-3);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.kup-staleness-regen:hover {
+  background: rgba(234, 179, 8, 0.12);
+}
+
+/* ── 滚动内容区 ─────────────────────────────────────────────────────────────── */
+
+.kup-scroll-area {
+  flex: 1;
+  overflow-y: auto;
+  padding-bottom: var(--space-16);
+}
+
+/* ── 知识标题英雄区 ──────────────────────────────────────────────────────────── */
+
+.kup-hero {
+  padding: var(--space-8) var(--space-8) var(--space-6);
+  background: var(--surface-primary);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.kup-title {
+  font-size: var(--text-2xl);
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-tight);
+  margin: 0 0 var(--space-3) 0;
+}
+
+.kup-core-insight {
+  font-size: var(--text-base);
+  color: var(--text-secondary);
+  line-height: var(--leading-relaxed);
+  font-style: italic;
+  margin: 0 0 var(--space-4) 0;
+}
+
+.kup-hero-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.kup-depth-stars {
+  margin-left: auto;
+  color: var(--brand-gold);
+  font-size: var(--text-sm);
+  letter-spacing: 2px;
+}
+
+/* ── 折叠步骤 ───────────────────────────────────────────────────────────────── */
+
+.kup-step {
+  background: var(--surface-primary);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.kup-step-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-6);
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-primary);
+  transition: background 0.12s;
+}
+
+.kup-step-header:hover {
+  background: var(--surface-secondary);
+}
+
+.kup-step-num {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-full);
+  background: var(--surface-tertiary);
+  border: 1.5px solid var(--border-primary);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.kup-step-done .kup-step-num {
+  background: var(--color-success);
+  border-color: var(--color-success);
+  color: white;
+}
+
+.kup-step-title {
+  flex: 1;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.kup-step-body {
+  padding: 0 var(--space-6) var(--space-5);
+}
+
+/* ── 摘要 & 内容文本 ─────────────────────────────────────────────────────────── */
+
+.kup-summary-text {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  line-height: var(--leading-relaxed);
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.kup-streaming-indicator {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-3);
+}
+
+.kup-generate-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  background: var(--surface-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.kup-generate-btn:hover {
+  background: var(--surface-tertiary);
+}
+
+.kup-regen-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-top: var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+.kup-next-step-btn {
+  display: block;
+  margin-top: var(--space-4);
+  padding: var(--space-3) var(--space-5);
+  background: var(--color-accent);
+  color: white;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.kup-next-step-btn:hover { background: var(--color-accent-dark); }
+
+/* ── 理解框架 ───────────────────────────────────────────────────────────────── */
+
+.kup-explanation {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.kup-expl-block {
+  padding: var(--space-3);
+  background: var(--surface-secondary);
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--color-accent);
+}
+
+.kup-misconception {
+  border-left-color: var(--color-warning);
+}
+
+.kup-expl-label {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-1);
+}
+
+.kup-expl-text {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  line-height: var(--leading-relaxed);
+  margin: 0;
+}
+
+.kup-source-tag {
+  display: inline-block;
+  margin-top: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  background: var(--surface-tertiary);
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+}
+
+.kup-essence-box {
+  padding: var(--space-4);
+  background: linear-gradient(135deg, var(--brand-navy) 0%, var(--brand-navy-light) 100%);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.kup-essence-label {
+  font-size: var(--text-xs);
+  color: rgba(255,255,255,0.6);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.kup-essence-text {
+  font-size: var(--text-base);
+  color: white;
+  font-weight: 600;
+  line-height: var(--leading-normal);
+}
+
+/* ── 笔记 ───────────────────────────────────────────────────────────────────── */
+
+.kup-note-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--space-3);
+  background: var(--surface-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  font-family: var(--font-system);
+  line-height: var(--leading-relaxed);
+  resize: vertical;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.kup-note-textarea:focus {
+  border-color: var(--color-accent);
+}
+
+.kup-note-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.kup-saved-hint {
+  font-size: var(--text-xs);
+  color: var(--color-success);
+}
+
+.kup-starter-btn {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  background: var(--surface-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  padding: 4px var(--space-3);
+  cursor: pointer;
+}
+
+.kup-mirror-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-4);
+  background: var(--brand-navy);
+  color: white;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  margin-left: auto;
+  transition: background 0.15s;
+}
+
+.kup-mirror-btn:hover:not(:disabled) { background: var(--brand-navy-light); }
+.kup-mirror-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* ── 镜子反馈 ───────────────────────────────────────────────────────────────── */
+
+.kup-mirror {
+  margin-top: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  background: var(--surface-secondary);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-primary);
+}
+
+.kup-mirror-section { }
+
+.kup-mirror-label {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-2);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.kup-mirror-list {
+  margin: 0;
+  padding-left: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.kup-mirror-covered {
+  font-size: var(--text-sm);
+  color: var(--color-success);
+}
+
+.kup-mirror-add {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.kup-mirror-empty {
+  font-size: var(--text-sm);
+  color: var(--text-tertiary);
+  margin: 0;
+}
+
+.kup-mirror-diff {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  margin: 0;
+  font-style: italic;
+}
+
+/* ── 理解时间线 ─────────────────────────────────────────────────────────────── */
+
+.kup-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.kup-tl-item {
+  display: flex;
+  gap: var(--space-3);
+  position: relative;
+}
+
+.kup-tl-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  flex-shrink: 0;
+  margin-top: 5px;
+}
+
+.kup-tl-line {
+  position: absolute;
+  left: 3px;
+  top: 13px;
+  width: 2px;
+  bottom: -8px;
+  background: var(--border-primary);
+}
+
+.kup-tl-content {
+  flex: 1;
+  padding-bottom: var(--space-4);
+}
+
+.kup-tl-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-1);
+}
+
+.kup-tl-depth { color: var(--brand-gold); }
+
+.kup-tl-text {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  margin: 0;
+  line-height: var(--leading-normal);
+}
+
+.kup-tl-growth {
+  font-size: var(--text-xs);
+  color: var(--color-success);
+  margin: var(--space-2) 0 0 0;
+  font-weight: 500;
+}
+
+/* ── 推荐行动卡底部（固定） ─────────────────────────────────────────────────── */
+
+.kup-action-footer {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: var(--space-4) var(--space-6);
+  background: var(--surface-primary);
+  border-top: 1px solid var(--border-primary);
+  box-shadow: 0 -4px 12px rgba(15, 23, 42, 0.06);
+}
+
+.kup-action-inner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.kup-action-label {
+  flex: 1;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  margin: 0;
+  line-height: var(--leading-normal);
+}
+
+.kup-action-cta {
+  flex-shrink: 0;
+  padding: var(--space-2) var(--space-5);
+  background: var(--color-accent);
+  color: white;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+
+.kup-action-cta:hover { background: var(--color-accent-dark); }
