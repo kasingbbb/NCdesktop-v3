@@ -1,0 +1,382 @@
+/* ─── SkillChallengePanel ───────────────────────────────────────────────────── */
+
+.scp-root {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  margin-top: 16px;
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────────── */
+
+.scp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.scp-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.scp-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-tertiary);
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.scp-close:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+/* ── Loading ─────────────────────────────────────────────────────────────────── */
+
+.scp-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  padding: 24px 0;
+  justify-content: center;
+}
+
+.scp-spin {
+  animation: scp-spin 1s linear infinite;
+}
+
+@keyframes scp-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Error ───────────────────────────────────────────────────────────────────── */
+
+.scp-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--color-error, #f87171);
+  background: color-mix(in srgb, var(--color-error, #f87171) 10%, transparent);
+  padding: 8px 12px;
+  border-radius: 8px;
+}
+
+/* ── Question ────────────────────────────────────────────────────────────────── */
+
+.scp-question-wrap {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.scp-question-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-accent);
+}
+
+.scp-question {
+  font-size: 14px;
+  color: var(--text-primary);
+  line-height: 1.65;
+  margin: 0;
+}
+
+.scp-context {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.55;
+  margin: 0;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.scp-keypoints {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding-top: 4px;
+}
+
+.scp-keypoints-label {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.scp-kp-chip {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  color: var(--color-accent);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 25%, transparent);
+}
+
+/* ── Answer ──────────────────────────────────────────────────────────────────── */
+
+.scp-answer-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.scp-answer-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.scp-answer-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-weight: 400;
+}
+
+.scp-answer-textarea {
+  width: 100%;
+  resize: vertical;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 12px;
+  font-size: 13px;
+  color: var(--text-primary);
+  font-family: inherit;
+  line-height: 1.6;
+  transition: border-color 0.15s;
+  box-sizing: border-box;
+}
+
+.scp-answer-textarea:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 15%, transparent);
+}
+
+.scp-answer-textarea:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.scp-answer-textarea::placeholder {
+  color: var(--text-tertiary);
+}
+
+/* ── Actions ─────────────────────────────────────────────────────────────────── */
+
+.scp-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.scp-submit-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 18px;
+  border-radius: 8px;
+  border: none;
+  background: var(--color-accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.1s;
+}
+
+.scp-submit-btn:hover:not(:disabled) {
+  opacity: 0.88;
+  transform: translateY(-1px);
+}
+
+.scp-submit-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.scp-submit-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* ── Result ──────────────────────────────────────────────────────────────────── */
+
+.scp-result {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 0;
+}
+
+.scp-score-ring {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border: 3px solid;
+}
+
+.scp-score-pass {
+  border-color: var(--color-success, #34d399);
+  background: color-mix(in srgb, var(--color-success, #34d399) 10%, transparent);
+}
+
+.scp-score-fail {
+  border-color: var(--color-warning, #fbbf24);
+  background: color-mix(in srgb, var(--color-warning, #fbbf24) 10%, transparent);
+}
+
+.scp-score-num {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1;
+}
+
+.scp-score-unit {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.scp-pass-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-success, #34d399);
+}
+
+.scp-fail-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-warning, #fbbf24);
+}
+
+.scp-feedback {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  text-align: center;
+  margin: 0;
+  max-width: 400px;
+}
+
+.scp-points-section {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.scp-points-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.scp-covered-label { color: var(--color-success, #34d399); }
+.scp-missed-label  { color: var(--color-accent); }
+
+.scp-points-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.scp-point-item {
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+
+.scp-covered {
+  background: color-mix(in srgb, var(--color-success, #34d399) 10%, transparent);
+  color: var(--color-success, #34d399);
+}
+
+.scp-missed {
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  color: var(--color-accent);
+}
+
+/* ── Result actions ──────────────────────────────────────────────────────────── */
+
+.scp-result-actions {
+  display: flex;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.scp-retry-btn,
+.scp-done-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.scp-retry-btn {
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+}
+
+.scp-retry-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-default);
+}
+
+.scp-done-btn {
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+}
+
+.scp-done-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-default);
+}

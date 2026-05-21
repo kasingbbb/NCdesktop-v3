@@ -1,0 +1,232 @@
+/* KnowledgeUnitDetailPanel 样式 */
+
+.kudp-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: var(--space-3);
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+}
+
+@keyframes kudp-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+.kudp-spin { animation: kudp-spin 1s linear infinite; }
+
+/* ── 根布局 ─────────────────────────────────────────────────────────────────── */
+
+.kudp-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow-y: auto;
+  background: var(--surface-primary);
+}
+
+/* ── 头部 ───────────────────────────────────────────────────────────────────── */
+
+.kudp-header {
+  padding: var(--space-6);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.kudp-status-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.kudp-status-icon {
+  font-size: 16px;
+  font-family: var(--font-mono);
+  line-height: 1;
+}
+
+.kudp-status-raw         { color: var(--text-tertiary); }
+.kudp-status-synthesized { color: var(--color-warning); }
+.kudp-status-understood  { color: var(--color-info); }
+.kudp-status-articulated { color: var(--color-accent); }
+.kudp-status-validated   { color: var(--color-success); }
+.kudp-status-consolidated{ color: var(--color-success); }
+.kudp-status-mastered    { color: var(--brand-gold); }
+
+.kudp-status-label {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+
+.kudp-depth {
+  margin-left: auto;
+  font-size: var(--text-xs);
+  color: var(--brand-gold);
+  letter-spacing: 1px;
+}
+
+.kudp-title {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: var(--leading-tight);
+  margin: 0 0 var(--space-2) 0;
+  letter-spacing: var(--tracking-tight);
+}
+
+.kudp-insight {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  margin: 0 0 var(--space-3) 0;
+  line-height: var(--leading-relaxed);
+  font-style: italic;
+}
+
+.kudp-meta {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+/* ── 推荐行动卡 ─────────────────────────────────────────────────────────────── */
+
+.kudp-action-card {
+  margin: var(--space-4) var(--space-4) 0;
+  padding: var(--space-4);
+  border: 1.5px solid var(--color-accent);
+  border-radius: var(--radius-lg);
+  background: var(--color-accent-soft);
+}
+
+.kudp-action-label {
+  font-size: var(--text-sm);
+  color: var(--color-accent-dark);
+  margin: 0 0 var(--space-3) 0;
+  line-height: var(--leading-normal);
+}
+
+.kudp-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-4);
+  background: var(--color-accent);
+  color: white;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.kudp-action-btn:hover {
+  background: var(--color-accent-dark);
+}
+
+/* ── 内容段落 ────────────────────────────────────────────────────────────────── */
+
+.kudp-section {
+  padding: var(--space-5) var(--space-6);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.kudp-section-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: var(--space-3);
+}
+
+.kudp-summary-text,
+.kudp-note-text {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  line-height: var(--leading-relaxed);
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.kudp-read-more {
+  display: inline-block;
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--color-accent);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+/* ── 理解快照时间线 ──────────────────────────────────────────────────────────── */
+
+.kudp-snapshots {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.kudp-snapshot-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.kudp-snap-time {
+  width: 48px;
+  flex-shrink: 0;
+}
+
+.kudp-snap-depth {
+  color: var(--brand-gold);
+  letter-spacing: 1px;
+}
+
+.kudp-snap-covered {
+  color: var(--text-secondary);
+}
+
+.kudp-evolution-hint {
+  font-size: var(--text-xs);
+  color: var(--color-success);
+  margin: var(--space-2) 0 0 0;
+  font-weight: 500;
+}
+
+/* ── 底部深入学习按钮 ────────────────────────────────────────────────────────── */
+
+.kudp-footer {
+  padding: var(--space-4) var(--space-6);
+  margin-top: auto;
+  border-top: 1px solid var(--border-primary);
+}
+
+.kudp-deep-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  width: 100%;
+  background: var(--surface-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background 0.15s;
+  justify-content: center;
+}
+
+.kudp-deep-btn:hover {
+  background: var(--surface-tertiary);
+}

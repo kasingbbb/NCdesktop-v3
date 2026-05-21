@@ -1,0 +1,458 @@
+/* ─── SkillsView ────────────────────────────────────────────────────────────── */
+
+/* Root layout: sidebar + detail */
+.skv-root {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────────────────────── */
+
+.skv-sidebar {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border-subtle);
+  overflow-y: auto;
+  background: var(--bg-secondary);
+}
+
+/* Toolbar */
+.skv-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  position: sticky;
+  top: 0;
+  background: var(--bg-secondary);
+  z-index: 1;
+}
+
+.skv-toolbar-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.skv-toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.skv-toolbar-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--border-default);
+  color: var(--text-primary);
+}
+
+.skv-toolbar-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.skv-spin {
+  animation: skv-spin 1s linear infinite;
+}
+
+@keyframes skv-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Loading / error / empty states */
+.skv-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 0;
+  color: var(--text-tertiary);
+}
+
+.skv-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 16px;
+  font-size: 12px;
+  color: var(--color-error, #f87171);
+  text-align: center;
+}
+
+.skv-retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0.8;
+  transition: opacity 0.15s;
+}
+
+.skv-retry:hover { opacity: 1; }
+
+.skv-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 13px;
+}
+
+.skv-empty-icon {
+  opacity: 0.35;
+  margin-bottom: 4px;
+}
+
+.skv-empty-sub {
+  font-size: 11px;
+  line-height: 1.55;
+  opacity: 0.7;
+}
+
+/* ── Skill List Items ────────────────────────────────────────────────────────── */
+
+.skv-skill-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px;
+  text-align: left;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: pointer;
+  transition: background 0.12s;
+  width: 100%;
+}
+
+.skv-skill-item:hover {
+  background: var(--bg-hover);
+}
+
+.skv-skill-selected {
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+  border-left: 3px solid var(--color-accent);
+  padding-left: 11px;
+}
+
+.skv-skill-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.skv-skill-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+
+.skv-skill-status {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+
+.skv-progress-bar {
+  height: 3px;
+  background: var(--border-subtle);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.skv-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
+.skv-skill-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+/* ── Detail Panel ────────────────────────────────────────────────────────────── */
+
+.skv-detail {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  background: var(--bg-primary);
+}
+
+.skv-detail-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 10px;
+  color: var(--text-tertiary);
+  font-size: 13px;
+}
+
+.skv-detail-empty-icon {
+  opacity: 0.3;
+}
+
+/* ── SkillDetail ─────────────────────────────────────────────────────────────── */
+
+.skv-detail-root {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.skv-detail-header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.skv-detail-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.skv-detail-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.skv-refresh-btn {
+  background: none;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 4px;
+  cursor: pointer;
+  color: var(--text-tertiary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
+}
+
+.skv-refresh-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+
+.skv-detail-name {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.skv-detail-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin: 0;
+}
+
+.skv-detail-progress-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.skv-detail-progress-bar {
+  flex: 1;
+  height: 6px;
+  background: var(--border-subtle);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.skv-detail-progress-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+
+.skv-detail-pct {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  min-width: 36px;
+  text-align: right;
+}
+
+.skv-detail-ku-count {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+/* ── Challenge CTA ───────────────────────────────────────────────────────────── */
+
+.skv-challenge-cta {
+  /* Wrapper for challenge button or hint */
+}
+
+.skv-verified-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-success, #34d399) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-success, #34d399) 25%, transparent);
+  color: var(--color-success, #34d399);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.skv-verified-date {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-tertiary);
+}
+
+.skv-challenge-ready {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.skv-challenge-hint {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.55;
+  margin: 0;
+}
+
+.skv-challenge-hint--wait {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  padding: 10px 14px;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+}
+
+.skv-challenge-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 20px;
+  border-radius: 8px;
+  border: none;
+  background: var(--color-accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  align-self: flex-start;
+  transition: opacity 0.15s, transform 0.1s;
+}
+
+.skv-challenge-btn:hover {
+  opacity: 0.88;
+  transform: translateY(-1px);
+}
+
+.skv-challenge-btn:active {
+  transform: translateY(0);
+}
+
+/* ── Last Evaluation ─────────────────────────────────────────────────────────── */
+
+.skv-last-eval {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.skv-last-eval-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.skv-last-eval-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.skv-last-eval-score {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-accent);
+}
+
+.skv-last-eval-feedback {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.55;
+  margin: 0;
+}
+
+.skv-eval-points {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.skv-eval-covered li,
+.skv-eval-missed li {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 5px;
+}
+
+.skv-eval-covered li {
+  background: color-mix(in srgb, var(--color-success, #34d399) 10%, transparent);
+  color: var(--color-success, #34d399);
+}
+
+.skv-eval-missed li {
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  color: var(--color-accent);
+}

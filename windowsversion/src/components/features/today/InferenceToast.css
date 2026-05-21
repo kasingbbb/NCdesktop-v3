@@ -1,0 +1,147 @@
+/* InferenceToast — 低置信度信号推断 Toast 样式 */
+
+/* ── 堆栈容器（固定右下角） ──────────────────────────────────────────────────── */
+
+.inf-toast-stack {
+  position: fixed;
+  bottom: var(--space-6);
+  right: var(--space-6);
+  display: flex;
+  flex-direction: column-reverse;
+  gap: var(--space-3);
+  z-index: 1000;
+  max-width: 320px;
+  width: 100%;
+  pointer-events: none;
+}
+
+/* ── 单条 Toast ──────────────────────────────────────────────────────────────── */
+
+.inf-toast {
+  background: var(--surface-primary);
+  border: 1px solid var(--border-primary);
+  border-left: 3px solid var(--color-warning);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.12);
+  pointer-events: all;
+  animation: inf-slide-in 0.2s ease-out;
+}
+
+@keyframes inf-slide-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── 头部 ───────────────────────────────────────────────────────────────────── */
+
+.inf-toast-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
+}
+
+.inf-toast-icon {
+  color: var(--color-warning);
+  flex-shrink: 0;
+}
+
+.inf-toast-title {
+  flex: 1;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: var(--leading-tight);
+}
+
+.inf-toast-close {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-tertiary);
+  border-radius: var(--radius-sm);
+  transition: background 0.1s;
+}
+
+.inf-toast-close:hover {
+  background: var(--surface-secondary);
+  color: var(--text-secondary);
+}
+
+/* ── 副标题 ─────────────────────────────────────────────────────────────────── */
+
+.inf-toast-sub {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  margin: 0 0 var(--space-3) 0;
+}
+
+/* ── 行动按钮组 ─────────────────────────────────────────────────────────────── */
+
+.inf-toast-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* 候选 KU 按钮 */
+.inf-toast-candidate {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s, border-color 0.1s;
+  gap: var(--space-2);
+}
+
+.inf-toast-candidate:hover {
+  background: var(--color-accent-soft);
+  border-color: var(--color-accent);
+}
+
+.inf-cand-title {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.inf-cand-sim {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+}
+
+/* 新建 KU 按钮 */
+.inf-toast-new {
+  padding: var(--space-2) var(--space-3);
+  background: none;
+  border: 1px dashed var(--border-primary);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
+}
+
+.inf-toast-new:hover {
+  background: var(--surface-secondary);
+  border-color: var(--text-tertiary);
+  color: var(--text-primary);
+}

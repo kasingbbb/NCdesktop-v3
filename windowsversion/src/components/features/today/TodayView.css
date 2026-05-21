@@ -1,0 +1,398 @@
+/* TodayView — 今天视图样式 */
+
+/* ── Tabs（task_010 / ADR-006） ──────────────────────────────────────────── */
+
+.tdv-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-1, 4px);
+  padding: var(--space-3) var(--space-4) 0;
+  border-bottom: 1px solid var(--border-primary);
+  flex-shrink: 0;
+}
+
+.tdv-tab {
+  appearance: none;
+  background: transparent;
+  border: none;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+.tdv-tab:hover {
+  color: var(--text-primary);
+}
+
+.tdv-tab--active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent-primary, var(--text-primary));
+  font-weight: 600;
+}
+
+.tdv-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.tdv-panel--placeholder {
+  align-items: center;
+  justify-content: center;
+}
+
+@keyframes tdv-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.tdv-spin { animation: tdv-spin 1s linear infinite; }
+
+/* ── 根布局 ─────────────────────────────────────────────────────────────────── */
+
+.tdv-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow-y: auto;
+  background: var(--surface-canvas);
+}
+
+.tdv-loading,
+.tdv-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: var(--space-3);
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+}
+
+.tdv-retry-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-4);
+  background: var(--surface-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+
+/* ── 顶部问候 ────────────────────────────────────────────────────────────────── */
+
+.tdv-header {
+  padding: var(--space-8) var(--space-8) var(--space-4);
+  background: var(--surface-primary);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.tdv-date {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  margin-bottom: var(--space-1);
+  letter-spacing: 0.02em;
+}
+
+.tdv-headline {
+  font-size: var(--text-xl);
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: var(--tracking-tight);
+}
+
+/* ── 统计行 ─────────────────────────────────────────────────────────────────── */
+
+.tdv-stats-row {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: var(--space-3) var(--space-8);
+  background: var(--surface-primary);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.tdv-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+}
+
+.tdv-stat-value {
+  font-size: var(--text-xl);
+  font-weight: 700;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  line-height: 1;
+}
+
+.tdv-stat-label {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.tdv-stat-divider {
+  width: 1px;
+  height: 28px;
+  background: var(--border-primary);
+}
+
+/* ── 内容区 ─────────────────────────────────────────────────────────────────── */
+
+.tdv-content {
+  flex: 1;
+  padding: var(--space-6) var(--space-6) var(--space-12);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.tdv-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.tdv-section-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.tdv-zap {
+  color: var(--color-warning);
+}
+
+/* ── 空状态 ─────────────────────────────────────────────────────────────────── */
+
+.tdv-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-12) 0;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+.tdv-empty-icon {
+  color: var(--text-tertiary);
+  opacity: 0.4;
+}
+
+.tdv-empty-sub {
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  margin: 0;
+}
+
+/* ── 主卡 ───────────────────────────────────────────────────────────────────── */
+
+.tdv-main-card {
+  background: var(--surface-primary);
+  border: 1.5px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  transition: border-color 0.15s;
+}
+
+.tdv-main-card--overdue {
+  border-color: var(--color-warning);
+  background: var(--color-warning-soft, rgba(234, 179, 8, 0.04));
+}
+
+.tdv-main-card-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.tdv-status-icon {
+  font-size: var(--text-sm);
+  font-family: var(--font-mono);
+}
+
+.tdv-status-raw         { color: var(--text-tertiary); }
+.tdv-status-synthesized { color: var(--color-warning); }
+.tdv-status-understood  { color: var(--color-info); }
+.tdv-status-articulated { color: var(--color-accent); }
+.tdv-status-validated,
+.tdv-status-consolidated { color: var(--color-success); }
+.tdv-status-mastered    { color: var(--brand-gold); }
+
+.tdv-status-label {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+
+.tdv-overdue-badge {
+  font-size: var(--text-xs);
+  color: var(--color-warning);
+  background: rgba(234, 179, 8, 0.12);
+  padding: 2px 6px;
+  border-radius: var(--radius-full);
+  font-weight: 600;
+}
+
+.tdv-depth-stars {
+  margin-left: auto;
+  font-size: var(--text-xs);
+  color: var(--brand-gold);
+  letter-spacing: 1px;
+}
+
+.tdv-main-title {
+  font-size: var(--text-lg);
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-tight);
+  margin: 0;
+}
+
+.tdv-main-insight {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  line-height: var(--leading-relaxed);
+  font-style: italic;
+  margin: 0;
+}
+
+.tdv-main-label {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  margin: 0;
+  line-height: var(--leading-normal);
+}
+
+.tdv-main-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: var(--space-1);
+}
+
+.tdv-main-meta {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.tdv-main-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-5);
+  background: var(--color-accent);
+  color: white;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.tdv-main-cta:hover {
+  background: var(--color-accent-dark);
+}
+
+/* ── 次要列表 ────────────────────────────────────────────────────────────────── */
+
+.tdv-secondary-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  background: var(--surface-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.tdv-secondary-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border-primary);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.tdv-secondary-item:last-child {
+  border-bottom: none;
+}
+
+.tdv-secondary-item:hover {
+  background: var(--surface-secondary);
+}
+
+.tdv-si-icon {
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+
+.tdv-si-body {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.tdv-si-title {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tdv-si-overdue {
+  font-size: var(--text-xs);
+  color: var(--color-warning);
+  background: rgba(234, 179, 8, 0.12);
+  padding: 1px 5px;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+  font-weight: 600;
+}
+
+.tdv-si-cta {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.tdv-si-arrow {
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
