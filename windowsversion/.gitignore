@@ -1,0 +1,51 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+target/
+release/
+build/runtime/
+
+# 嵌入式 Python + venv 由 scripts/prepare-embedded-*.sh 生成，不入仓（363M PBS Python）
+src-tauri/resources/python/
+src-tauri/resources/markitdown-venv/
+
+# Tauri 生成文件
+src-tauri/target/
+src-tauri/WixTools/
+src-tauri/gen/
+
+# 环境变量
+.env
+.env.local
+*.local
+
+# 私有分发凭据（编译期烤入二进制，本地保留、绝不进 git）
+src-tauri/.bundled-creds.env
+
+# IDE
+.vscode/
+!.vscode/extensions.json
+.idea/
+
+# 系统文件
+*.DS_Store
+Thumbs.db
+
+# 日志
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# 真实样本（AC-7 保险栏 — task_000）
+# 这些后缀禁止以明文形式进入主仓；样本应位于独立 samples-private 仓 + AES-256 加密。
+samples/
+**/samples/
+*.pdf
+*.docx
+*.pptx
+*.xlsx
+*.epub
+# 加密样本本身也不应进主仓
+*.enc
