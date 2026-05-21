@@ -52,6 +52,13 @@ infer = "0.19"
 # 仅在挂接既有孤儿模块（`startup` → `utils::nfc`）时需要；版本对齐 Cargo.lock 中
 # 由 idna 等间接拉入的同版本，避免重复编译。
 unicode-normalization = "0.1"
+# Phase 4 接入：扫描型 PDF 单页栅格化（OpenAI Vision OCR 走图像）。
+# 运行时需 PDFium 动态库（Windows 下 pdfium.dll），由 BUILD-WINDOWS.md 指引
+# 用户下载到 src-tauri/ 根目录或通过 tauri.conf.json 的 bundle.resources 分发。
+pdfium-render = "0.8"
+# Phase 4 接入：pdfium-render 的 `as_image()` 输出 image crate 的 DynamicImage，
+# 我们需要 `write_to(Cursor, ImageFormat::Png)`。
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
 env_logger = "0.11"

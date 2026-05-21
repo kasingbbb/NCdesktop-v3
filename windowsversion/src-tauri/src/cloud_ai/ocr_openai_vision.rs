@@ -20,6 +20,8 @@ use std::time::Duration;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use serde::{Deserialize, Serialize};
 
+use crate::cloud_ai::heic_convert;
+use crate::cloud_ai::pdf_render;
 use crate::extraction::models::ExtractionError;
 
 use super::{resolve_openai_api_key, resolve_openai_base_url};
@@ -132,7 +134,24 @@ fn cloud_http_client() -> &'static reqwest::Client {
 // ── 对外 API ─────────────────────────────────────────────────────────────────
 
 /// 用 OpenAI Vision OCR 一张图。
+///
+/// HEIC/HEIF 自动走 [`heic_convert::heic_to_jpeg`] 转码后再上传（OpenAI Vision
+/// 只接受 jpeg/png/gif/webp）。当前 HEIC 真实现待 `windows` crate 接入，因此
+/// HEIC 路径会返回明确 OcrError，提示用户手动转 JPEG。
 pub async fn ocr_image(file_path: &Path) -> Result<Vec<OcrRegion>, ExtractionError> {
+    if heic_convert::is_heic_path(file_path) {
+        // HEIC 转 JPEG 是同步 CPU 工作（即使占位实现也只是 cheap 返回错误），
+        // 放 blocking pool 与未来真实现保持一致。
+        let path_owned = file_path.to_path_buf();
+        let jpeg_bytes = tokio::task::spawn_blocking(move || {
+            heic_convert::heic_to_jpeg(&path_owned, heic_convert::DEFAULT_JPEG_QUALITY)
+        })
+        .await
+        .map_err(|e| ExtractionError::OcrError(format!("HEIC 转码任务 join 失败: {e}")))??;
+        let data_url = format!("data:image/jpeg;base64,{}", BASE64.encode(&jpeg_bytes));
+        return ocr_data_url(&data_url).await;
+    }
+
     let bytes = tokio::fs::read(file_path)
         .await
         .map_err(ExtractionError::IoError)?;
@@ -157,10 +176,14 @@ pub async fn pdf_page_count(pdf_path: &Path) -> Result<i32, ExtractionError> {
 
 /// PDF 单页 OCR。
 ///
-/// 当前实现走文本抽取降级（见模块顶层文档）：用 `pdf-extract` 抽取全文，
-/// 按 form feed `\x0C` 切页（pdf-extract 没有可靠的逐页接口），命中目标页
-/// 则把整页文本作为单个 `OcrRegion` 返回。对原生文本 PDF 完全可用；对扫描
-/// 型 PDF（全是图）会返回空向量，由上层走 `needs_ocr_fallback`。
+/// 单次 `pdf_extract::extract_text` 抽全文 → 定位目标页文本 → 看是否"看似扫描版"：
+///
+/// 1. **扫描型 PDF**（[`pdf_render::looks_scanned`] 命中）：调
+///    [`pdf_render::render_pdf_page_to_png`] 把该页栅格化为 PNG，再走 OpenAI
+///    Vision OCR（与 `ocr_image` 同一后端）。需要运行时 PDFium 动态库
+///    （详见 BUILD-WINDOWS.md）；缺失时返回 `OcrError`，调用方按
+///    `needs_ocr_fallback` 流程兜底。
+/// 2. **原生文本 PDF**：把整页文本作为单个 `OcrRegion` 返回（置信度 0.5）。
 ///
 /// `page_index` 0-based，与 macOS `ocr_ffi::ocr_pdf_page` 一致。
 pub async fn ocr_pdf_page(
@@ -179,7 +202,10 @@ pub async fn ocr_pdf_page(
         )));
     }
 
-    // pdf-extract 是同步 CPU 工作，放到 blocking pool 避免阻塞 runtime
+    // 先 pdf-extract 抽全文一次，用它同时回答两个问题：
+    // ① 该页是否"看似扫描版"（文本极少 → 上 pdfium 渲染 + Vision OCR）
+    // ② 否则该页的文本是什么（直接合成单个 OcrRegion 返回）
+    // 避免之前调 page_likely_scanned + 文本路径再 extract 一遍的双重抽取。
     let pdf_path_buf = pdf_path.to_path_buf();
     let all_text = tokio::task::spawn_blocking(move || {
         pdf_extract::extract_text(&pdf_path_buf)
@@ -188,18 +214,24 @@ pub async fn ocr_pdf_page(
     .await
     .map_err(|e| ExtractionError::OcrError(format!("blocking task join 失败: {e}")))??;
 
-    // pdf-extract 按 \x0C 分页；若分页失败则把全文当作单页
-    let page_text = all_text
-        .split('\u{000C}')
-        .nth(page_index as usize)
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("")
-        .to_string();
+    let page_text = pdf_render::extract_page_text(&all_text, page_index, total);
 
-    if page_text.is_empty() {
-        // 扫描型 PDF 或抽取失败：返回空向量；上层走 `needs_ocr_fallback` 流程
-        return Ok(vec![]);
+    if pdf_render::looks_scanned(&page_text) {
+        // 扫描页：用 pdfium 渲染为 PNG，再交给 OpenAI Vision；这条路径需运行时
+        // PDFium 动态库（见 BUILD-WINDOWS.md）。加载失败时 ? 会上抛 OcrError，
+        // 调用方走 `needs_ocr_fallback` 流程兜底。
+        let pdf_path_buf_for_render = pdf_path.to_path_buf();
+        let png_bytes = tokio::task::spawn_blocking(move || {
+            pdf_render::render_pdf_page_to_png(
+                &pdf_path_buf_for_render,
+                page_index,
+                pdf_render::RECOMMENDED_DPI,
+            )
+        })
+        .await
+        .map_err(|e| ExtractionError::OcrError(format!("PDF 渲染任务 join 失败: {e}")))??;
+        let data_url = format!("data:image/png;base64,{}", BASE64.encode(&png_bytes));
+        return ocr_data_url(&data_url).await;
     }
 
     Ok(vec![OcrRegion {

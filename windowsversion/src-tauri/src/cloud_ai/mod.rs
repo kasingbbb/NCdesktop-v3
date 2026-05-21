@@ -33,6 +33,16 @@
 pub mod asr_whisper_api;
 pub mod ocr_openai_vision;
 
+// Phase 4 接入：cloud_ai 内部工具模块。不再 pub use；这些类型仅在 cloud_ai
+// 内部使用（ocr_image / ocr_pdf_page / transcribe_audio 调用），对外接口不变。
+//
+// 注意：HEIC 真实现待后续接入 `windows` crate（Windows.Graphics.Imaging WinRT
+// API）；当前 HEIC 文件会返回 `OcrError` 提示用户手动转 JPEG（heic_convert 模
+// 块的占位实现）。
+mod audio_chunker;
+mod heic_convert;
+mod pdf_render;
+
 pub use asr_whisper_api::{transcribe_audio, AsrResult, AsrSegment};
 pub use ocr_openai_vision::{ocr_image, ocr_pdf_page, pdf_page_count, OcrRegion};
 

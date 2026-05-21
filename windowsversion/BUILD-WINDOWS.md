@@ -24,6 +24,21 @@
    - 在 https://platform.openai.com 获取 key
    - 设置环境变量：`setx OPENAI_API_KEY "sk-..."` 或在 app 内 Settings 配置
 
+6. **PDFium 动态库**（扫描版 PDF OCR 必需）
+   - 从 https://github.com/bblanchon/pdfium-binaries/releases 下载最新 `pdfium-windows-x64.zip`
+   - 解压后把 `bin/pdfium.dll` 复制到：
+     - 开发：`src-tauri/pdfium.dll`（与 Cargo.toml 同级目录）
+     - 打包：放到 `src-tauri/resources/pdfium.dll`，并在 `tauri.conf.json` 的 `bundle.resources` 加入 `"resources/pdfium.dll"`
+   - 没装时 PDF 扫描页 OCR 会返回错误 "PDFium 加载失败"；文本版 PDF 不受影响（走 `pdf-extract` 文本抽取路径）
+
+7. **HEIC 图片 OCR**（可选）
+
+   当前 Windows 版**不支持 HEIC 直接 OCR**（iPhone 默认格式）。如需使用：
+   - Windows 10/11 装 "HEVC 视频扩展"（Microsoft Store 免费）
+   - 用 Photos 打开 .heic → 另存为 .jpg，再拖入 NoteCapt
+
+   未来版本将通过 Windows.Graphics.Imaging WinRT API 自动转换（需添加 `windows` crate 依赖）。
+
 ## 开发
 
 ```powershell

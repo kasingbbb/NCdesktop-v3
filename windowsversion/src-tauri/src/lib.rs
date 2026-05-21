@@ -11,6 +11,11 @@ pub mod workspace;
 pub mod windows_native;
 pub mod extraction;
 pub mod source_scan;
+// Phase 4：cloud_ai 接入。`extraction::extractors::audio_asr` 在 Windows 分支
+// 调用 `crate::cloud_ai::transcribe_audio`；`ocr_pdf_page` / `ocr_image` 也作为
+// Vision/Whisper 接入点暴露。OcrRegion / AsrResult / AsrSegment 类型由本模块
+// re-export，供 extraction 流水线消费。
+pub mod cloud_ai;
 // task_008（M-1 关闭）：scheduler::write_derivative_md 通过 crate::utils::safe_name
 // 引用 sanitize_stem。utils 目录中的文件早已存在但 lib.rs 未注册，与 scheduler
 // 自身被注释属同一类"注册缺口"。

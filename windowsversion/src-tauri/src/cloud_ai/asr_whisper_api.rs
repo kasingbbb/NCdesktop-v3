@@ -5,9 +5,9 @@
 //!
 //! ## 文件大小限制
 //!
-//! OpenAI 当前的硬限是 **25 MB**。超过时本模块直接返回 `ExtractionError::OcrError`，
-//! 提示用户先压缩或裁切。完整分块上传（基于静音点切片 → 多次调用 → 拼接 segment
-//! 时间戳）超出 Unit 13 范围，作为 TODO 留给后续 Unit。
+//! OpenAI 硬限 **25 MB**。> 24 MB 的文件本模块通过 [`crate::cloud_ai::audio_chunker`]
+//! 按时间切成多个 WAV 块，逐块上传后合并 transcription + segments 时间戳
+//! （把每段 segment.start/end 加上 chunk.start_seconds 偏移）。
 //!
 //! ## 关于 multipart
 //!
@@ -21,14 +21,16 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::cloud_ai::audio_chunker;
 use crate::extraction::models::ExtractionError;
 
 use super::{resolve_openai_api_key, resolve_openai_base_url};
 
 const OPENAI_WHISPER_MODEL: &str = "whisper-1";
 const OPENAI_WHISPER_PATH: &str = "/v1/audio/transcriptions";
-/// OpenAI 硬限。超过则报错。
-const MAX_FILE_SIZE_BYTES: u64 = 25 * 1024 * 1024;
+/// 单次上传上限。OpenAI 硬限 25 MB；这里取 24 MB 留余量给 multipart overhead /
+/// 网络抖动，超过则走 `audio_chunker` 分块。
+const WHISPER_UPLOAD_LIMIT_BYTES: usize = 24 * 1024 * 1024;
 
 // ── 对外类型 ─────────────────────────────────────────────────────────────────
 
@@ -91,6 +93,12 @@ fn cloud_asr_http_client() -> &'static reqwest::Client {
 // ── 对外 API ─────────────────────────────────────────────────────────────────
 
 /// 上传音频到 OpenAI Whisper，返回转写 + segment 时间戳。
+///
+/// 行为：
+/// - 文件 ≤ [`WHISPER_UPLOAD_LIMIT_BYTES`]（24 MB）：直接上传整文件。
+/// - 文件 > 24 MB：通过 [`audio_chunker::split_audio_into_chunks`] 切块，
+///   逐块走 [`transcribe_single_file`]，最后合并 transcription + segments
+///   时间戳（每段 segment.start/end 加上 chunk.start_seconds 偏移）。
 pub async fn transcribe_audio(file_path: &Path) -> Result<AsrResult, ExtractionError> {
     let meta = tokio::fs::metadata(file_path).await.map_err(|e| {
         ExtractionError::IoError(std::io::Error::new(
@@ -99,13 +107,74 @@ pub async fn transcribe_audio(file_path: &Path) -> Result<AsrResult, ExtractionE
         ))
     })?;
 
-    if meta.len() > MAX_FILE_SIZE_BYTES {
-        return Err(ExtractionError::OcrError(format!(
-            "音频文件 {:.2} MB 超过 OpenAI Whisper 25 MB 上限，请先压缩或裁切（TODO: 实现按静音点分块上传）",
-            meta.len() as f64 / 1024.0 / 1024.0
-        )));
+    if (meta.len() as usize) <= WHISPER_UPLOAD_LIMIT_BYTES {
+        return transcribe_single_file(file_path).await;
     }
 
+    // 大文件：分块上传 + 合并 segments。
+    let chunks = audio_chunker::split_audio_into_chunks(file_path, WHISPER_UPLOAD_LIMIT_BYTES).await?;
+    let mut merged_segments: Vec<AsrSegment> = Vec::new();
+    let mut merged_transcription = String::new();
+    let mut last_segment_id: u32 = 0;
+    let mut detected_language: Option<String> = None;
+    let mut total_duration: f64 = 0.0;
+
+    for (i, chunk) in chunks.iter().enumerate() {
+        // 把 chunk.data 写到临时 WAV 文件（audio_chunker 已封装好 WAV header）
+        let tmp = std::env::temp_dir().join(format!(
+            "ncdesktop-whisper-chunk-{}-{}.wav",
+            std::process::id(),
+            i,
+        ));
+        tokio::fs::write(&tmp, &chunk.data).await.map_err(|e| {
+            ExtractionError::IoError(std::io::Error::new(
+                e.kind(),
+                format!("写 chunk 临时文件失败 ({}): {e}", tmp.display()),
+            ))
+        })?;
+
+        let chunk_result = transcribe_single_file(&tmp).await;
+        // 无论结果如何先清理临时文件，避免堆积
+        let _ = tokio::fs::remove_file(&tmp).await;
+        let r = chunk_result?;
+
+        // 合并 segments：把每段时间戳 += chunk.start_seconds；id 重新连续编号。
+        for seg in r.segments {
+            last_segment_id = last_segment_id.saturating_add(1);
+            merged_segments.push(AsrSegment {
+                id: last_segment_id,
+                start: seg.start + chunk.start_seconds,
+                end: seg.end + chunk.start_seconds,
+                text: seg.text,
+            });
+        }
+
+        // 合并文本：保留 chunk 间空格，避免句末粘连。
+        // r.transcription 已在 transcribe_single_file 内 trim 过。
+        if !r.transcription.is_empty() {
+            if !merged_transcription.is_empty() {
+                merged_transcription.push(' ');
+            }
+            merged_transcription.push_str(&r.transcription);
+        }
+
+        // language 取首个非 None；duration 取 chunk 时长之和（与原文件总长对齐）。
+        if detected_language.is_none() {
+            detected_language = r.language;
+        }
+        total_duration += chunk.duration_seconds;
+    }
+
+    Ok(AsrResult {
+        transcription: merged_transcription,
+        language: detected_language,
+        duration: Some(total_duration),
+        segments: merged_segments,
+    })
+}
+
+/// 单文件上传到 Whisper。调用前由 caller 保证文件 ≤ 24 MB。
+async fn transcribe_single_file(file_path: &Path) -> Result<AsrResult, ExtractionError> {
     let bytes = tokio::fs::read(file_path).await.map_err(ExtractionError::IoError)?;
     let file_name = file_path
         .file_name()
