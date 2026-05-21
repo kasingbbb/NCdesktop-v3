@@ -1,0 +1,340 @@
+@import "tailwindcss";
+
+@layer utilities {
+  .border-app {
+    border-color: var(--border-primary);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════
+   NCdesktop — NoteCapt 参考稿视觉令牌
+   冷灰画布 + 白卡片浮起 + 大圆角 + 柔和琥珀选中（与 PRD 海军蓝/金并存）
+   ═══════════════════════════════════════════════════════ */
+
+:root {
+  /* ═══ 表面色 (Surface) ═══ */
+  --surface-canvas: #f0f4f8;
+  --surface-primary: #ffffff;
+  --surface-secondary: #f8fafc;
+  --surface-tertiary: #f1f5f9;
+  --surface-elevated: #ffffff;
+
+  /* ═══ 侧栏深色驾驶舱 ═══ */
+  --sidebar-bg: #1a2233;
+  --sidebar-border: #2d3a50;
+  --sidebar-divider: rgba(255, 255, 255, 0.08);
+  --sidebar-text: rgba(255, 255, 255, 0.85);
+  --sidebar-text-muted: rgba(255, 255, 255, 0.6);
+  --sidebar-text-dim: rgba(255, 255, 255, 0.4);
+  --sidebar-hover-bg: rgba(255, 255, 255, 0.07);
+  --sidebar-active-bg: rgba(59, 130, 246, 0.15);
+  --sidebar-active-fg: #93c5fd;
+
+  /* ═══ 边框色 (Borders) — 1px 浅 slate ═══ */
+  --border-primary: #e2e8f0;
+  --border-hover: #cbd5e1;
+  --border-active: #94a3b8;
+
+  /* ═══ 阴影 — 低对比「浮起」卡片 ═══ */
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-float: 0 4px 6px -1px rgba(15, 23, 42, 0.05),
+    0 2px 4px -2px rgba(15, 23, 42, 0.04);
+  --shadow-md: 0 8px 24px -4px rgba(15, 23, 42, 0.08),
+    0 4px 8px -4px rgba(15, 23, 42, 0.04);
+  --shadow-lg: 0 16px 40px -8px rgba(15, 23, 42, 0.1),
+    0 8px 16px -8px rgba(15, 23, 42, 0.06);
+
+  /* ═══ 圆角 — 参考稿偏大圆角 ═══ */
+  --radius-xs: 4px;
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 20px;
+  --radius-full: 9999px;
+
+  /* ═══ 间距令牌（4px 基准网格）═══ */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* ═══ 品牌色 ═══ */
+  --brand-navy: #1f456e;
+  --brand-navy-light: #2a5a8f;
+  --brand-navy-dark: #152f4d;
+  --brand-gold: #ffc000;
+  --brand-gold-light: #ffd54f;
+  --brand-gold-dark: #e5ac00;
+
+  /* ═══ 语义色 ═══ */
+  --color-primary: var(--brand-navy);
+  --color-accent: #3b82f6;
+  --color-accent-soft: #dbeafe;
+  --color-success: #34c759;
+  --color-warning: #ff9500;
+  --color-danger: #ff3b30;
+  --color-info: #5ac8fa;
+
+  /* ═══ 文本色（亮色模式）═══ */
+  --text-primary: #1a202c;
+  --text-secondary: #718096;
+  --text-tertiary: #a0aec0;
+
+  /* ═══ 排版令牌 ═══ */
+  --font-system: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    "SF Pro Display", "Helvetica Neue", "PingFang SC", "Microsoft YaHei",
+    sans-serif;
+  --font-mono: "SF Mono", "Fira Code", "JetBrains Mono", "Cascadia Code",
+    Menlo, monospace;
+
+  --text-xs: 11px;
+  --text-sm: 13px;
+  --text-base: 15px;
+  --text-lg: 17px;
+  --text-xl: 20px;
+  --text-2xl: 24px;
+  --text-3xl: 28px;
+  --text-4xl: 34px;
+
+  --leading-tight: 1.2;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.65;
+
+  --tracking-tight: -0.02em;
+  --tracking-normal: 0;
+  --tracking-wide: 0.02em;
+
+  /* ═══ 动画令牌 ═══ */
+  --duration-instant: 100ms;
+  --duration-fast: 200ms;
+  --duration-normal: 300ms;
+  --duration-slow: 500ms;
+  --duration-glacial: 800ms;
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --ease-in-out-quart: cubic-bezier(0.76, 0, 0.24, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* ═══ AI 洞察区专属色（淡紫粉，与琥珀区分） ═══ */
+  --ai-surface: #f5f3ff;
+  --ai-border: #e9e5ff;
+
+  /* ═══ 原件窗格底色 ═══ */
+  --raw-pane-bg: #f4f6f9;
+  --raw-pane-border: #dde3ec;
+
+  /* ═══ 时间流窗格：分区底色与强调条（可读性）═══ */
+  --timeline-scroll-bg: #dce4ef;
+  --timeline-rail-bg: #e8f0f7;
+  --timeline-rail-line: var(--brand-navy);
+  --timeline-zone-audio-bg: #e8f0f7;
+  --timeline-zone-audio-stripe: var(--brand-navy);
+  --timeline-zone-image-bg: #fff4e6;
+  --timeline-zone-image-stripe: #ea580c;
+  --timeline-zone-doc-bg: #f3f0ff;
+  --timeline-zone-doc-stripe: #6d28d9;
+}
+
+/* ═══════════════════════════════════════════════════════
+   暗色模式令牌覆盖
+   ═══════════════════════════════════════════════════════ */
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --surface-canvas: #0c0e12;
+    --surface-primary: #0f0f11;
+    --surface-secondary: #14161c;
+    --surface-tertiary: #1c1f26;
+    --surface-elevated: #1a1d24;
+    --sidebar-bg: #0d1117;
+    --sidebar-border: #1c2333;
+    --sidebar-active-bg: rgba(59, 130, 246, 0.2);
+    --sidebar-active-fg: #93c5fd;
+
+    --border-primary: #2d3340;
+    --border-hover: #475569;
+    --border-active: #64748b;
+
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.25);
+    --shadow-float: 0 4px 12px rgba(0, 0, 0, 0.35);
+    --shadow-md: 0 8px 28px rgba(0, 0, 0, 0.35);
+    --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.45);
+
+    --text-primary: #f1f5f9;
+    --text-secondary: #94a3b8;
+    --text-tertiary: #64748b;
+
+    --ai-surface: #1e1b2e;
+    --ai-border: #312e45;
+
+    --timeline-scroll-bg: #141a24;
+    --timeline-rail-bg: #1a2332;
+    --timeline-rail-line: #60a5fa;
+    --timeline-zone-audio-bg: #1a2332;
+    --timeline-zone-audio-stripe: #60a5fa;
+    --timeline-zone-image-bg: #2c1810;
+    --timeline-zone-image-stripe: #fb923c;
+    --timeline-zone-doc-bg: #1e1b2e;
+    --timeline-zone-doc-stripe: #a78bfa;
+  }
+}
+
+[data-theme="dark"] {
+  --surface-canvas: #0c0e12;
+  --surface-primary: #0f0f11;
+  --surface-secondary: #14161c;
+  --surface-tertiary: #1c1f26;
+  --surface-elevated: #1a1d24;
+  --sidebar-bg: #0d1117;
+  --sidebar-border: #1c2333;
+  --sidebar-active-bg: rgba(59, 130, 246, 0.2);
+  --sidebar-active-fg: #93c5fd;
+
+  --border-primary: #2d3340;
+  --border-hover: #475569;
+  --border-active: #64748b;
+
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.25);
+  --shadow-float: 0 4px 12px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 8px 28px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.45);
+
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-tertiary: #64748b;
+
+  --ai-surface: #1e1b2e;
+  --ai-border: #312e45;
+
+  --timeline-scroll-bg: #141a24;
+  --timeline-rail-bg: #1a2332;
+  --timeline-rail-line: #60a5fa;
+  --timeline-zone-audio-bg: #1a2332;
+  --timeline-zone-audio-stripe: #60a5fa;
+  --timeline-zone-image-bg: #2c1810;
+  --timeline-zone-image-stripe: #fb923c;
+  --timeline-zone-doc-bg: #1e1b2e;
+  --timeline-zone-doc-stripe: #a78bfa;
+}
+
+/* ═══════════════════════════════════════════════════════
+   全局基础样式 — 实色背景
+   ═══════════════════════════════════════════════════════ */
+
+html,
+body,
+#root {
+  background: transparent;
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: var(--font-system);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* 禁止用户在非交互区域选择文字（桌面应用惯例） */
+body {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 可编辑区域恢复文本选择 */
+input,
+textarea,
+[contenteditable="true"],
+.selectable {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* 滚动条美化 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: var(--radius-full);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.25);
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* Sidebar v2: 学习模式分组语义令牌 */
+:root {
+  --sidebar-group-learning: var(--brand-gold, #ffc000);
+  --concept-linked-bg: #fffbeb;
+  --concept-linked-stripe: var(--color-warning, #ff9500);
+  --concept-merge-bg: #fef3c7;
+  --concept-merge-fg: #92400e;
+}
+
+/* Command Palette 入场动画 */
+@keyframes cmdEnter {
+  from {
+    opacity: 0;
+    transform: translateY(-12px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Toast 入场动画 */
+@keyframes toastEnter {
+  from {
+    transform: translateX(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* 学习中心分组淡入 */
+@keyframes sidebarLearningFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.sidebar-learning-fade-in {
+  animation: sidebarLearningFadeIn 200ms ease-out;
+}

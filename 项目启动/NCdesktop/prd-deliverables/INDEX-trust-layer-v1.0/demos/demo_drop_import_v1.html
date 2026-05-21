@@ -1,0 +1,1333 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>Demo 1 v2 · 在真实布局上叠加 INDEX 元素</title>
+<link rel="stylesheet" href="./_shared/tokens.css" />
+<link rel="stylesheet" href="./_shared/glass.css" />
+<style>
+  /* ═══ Demo 1 v2 · 100% 还原 AssetListView + Sidebar + Toolbar + Inspector 真实布局
+        只在 Inspector 内部和 Toolbar 提取中按钮叠加 INDEX 元素
+        其他位置一概不发明新元素 ═══ */
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    height: 100%; font-family: var(--font-system);
+    background: var(--surface-canvas);
+    color: var(--text-primary);
+    font-size: var(--text-sm);
+    -webkit-font-smoothing: antialiased;
+  }
+  ul, li { list-style: none; }
+  button { font-family: inherit; cursor: pointer; }
+
+  /* ─── App Layout ─── */
+  .app { display: flex; flex-direction: column; height: 100vh; }
+
+  /* ─── TitleBar(48px, glass-titlebar = sidebar-bg 深色)─── */
+  .titlebar {
+    height: 48px; flex-shrink: 0;
+    background: var(--sidebar-bg);
+    border-bottom: 1px solid var(--sidebar-border);
+    display: flex; align-items: center;
+    padding-left: 80px; padding-right: var(--space-4);
+    position: relative;
+  }
+  .titlebar-bc { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; }
+  .titlebar-bc .lbl { color: rgba(255,255,255,0.4); }
+  .titlebar-bc .sep { color: rgba(255,255,255,0.25); font-size: 11px; }
+  .titlebar-bc .cur { color: rgba(255,255,255,0.8); font-weight: 500; }
+  .titlebar-right { width: 80px; display: flex; justify-content: flex-end; align-items: center; padding-right: 12px; }
+  .titlebar-btn {
+    width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
+    color: rgba(255,255,255,0.4); border-radius: var(--radius-sm);
+    background: transparent; border: none;
+  }
+  .titlebar-btn:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.7); }
+
+  /* ─── 主 layout ─── */
+  .main { display: flex; flex: 1; min-height: 0; }
+
+  /* ─── Sidebar(220px, 深色驾驶舱)─── */
+  .sidebar {
+    width: 220px; flex-shrink: 0;
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--sidebar-border);
+    display: flex; flex-direction: column;
+    padding: var(--space-3);
+    color: var(--sidebar-text-muted);
+  }
+  .sb-brand {
+    display: flex; align-items: center; gap: var(--space-2);
+    padding: var(--space-2);
+    margin-bottom: var(--space-3);
+  }
+  .sb-brand .logo {
+    width: 32px; height: 32px;
+    border-radius: var(--radius-md);
+    background: rgba(255,255,255,0.06);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--sidebar-text); font-weight: 600;
+  }
+  .sb-brand .text { line-height: 1.2; }
+  .sb-brand .name { font-size: 13px; font-weight: 600; color: var(--sidebar-text); }
+  .sb-brand .sub { font-size: 10px; color: var(--sidebar-text-dim); letter-spacing: 0.04em; }
+
+  .sb-group-label {
+    font-size: 10px; color: var(--sidebar-text-dim);
+    padding: var(--space-3) var(--space-2) 4px;
+    letter-spacing: 0.04em;
+  }
+  .sb-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 3px 8px;
+    border-radius: var(--radius-md);
+    color: var(--sidebar-text-muted);
+    font-size: 11.5px;
+    background: transparent; border: none;
+    width: 100%; text-align: left;
+  }
+  .sb-item:hover { background: var(--sidebar-hover-bg); color: var(--sidebar-text); }
+  .sb-item.active { background: var(--sidebar-active-bg); color: var(--sidebar-active-fg); font-weight: 600; }
+  .sb-item .ic { width: 14px; opacity: 0.7; flex-shrink: 0; }
+  .sb-item.active .ic { opacity: 1; }
+  .sb-item .lbl { flex: 1; }
+  .sb-item .badge {
+    background: rgba(255,255,255,0.08); color: var(--sidebar-text-muted);
+    font-size: 10px; padding: 0 6px; border-radius: var(--radius-full);
+  }
+  .sb-tag-input {
+    margin: 4px 8px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.06);
+    color: var(--sidebar-text-muted);
+    padding: 3px 8px; border-radius: var(--radius-sm);
+    font-size: 11px;
+    width: calc(100% - 16px);
+    outline: none;
+  }
+  .sb-tag-input::placeholder { color: var(--sidebar-text-dim); }
+  .sb-scroll { flex: 1; overflow-y: auto; margin: 0 -4px; padding: 0 4px; }
+  .sb-scroll::-webkit-scrollbar { width: 6px; }
+  .sb-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.06); border-radius: 3px; }
+  .sb-bottom { padding-top: var(--space-2); border-top: 1px solid var(--sidebar-divider); }
+  .sb-item.tag .ic { color: var(--brand-gold); opacity: 0.6; }
+
+  /* ─── ContentArea ─── */
+  .content {
+    flex: 1; min-width: 0;
+    background: var(--surface-canvas);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── Toolbar(浅色, 独立)─── */
+  .toolbar {
+    flex-shrink: 0;
+    padding: var(--space-3) var(--space-4);
+    background: var(--surface-canvas);
+    display: flex; align-items: center; gap: var(--space-3);
+  }
+  .tb-back {
+    display: flex; align-items: center; gap: 4px;
+    background: transparent; border: none;
+    color: var(--text-secondary); font-size: 12px;
+    padding: 4px 8px; border-radius: var(--radius-sm);
+  }
+  .tb-back:hover { background: var(--surface-tertiary); }
+  .tb-title {
+    font-size: 18px; font-weight: 600; color: var(--text-primary);
+    margin-left: var(--space-2);
+  }
+  .tb-actions { margin-left: auto; display: flex; gap: var(--space-2); align-items: center; }
+  .tb-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 12px;
+    background: var(--surface-primary);
+    border: 1px solid var(--border-primary);
+    color: var(--text-secondary);
+    border-radius: var(--radius-full);
+    font-size: 11.5px;
+    position: relative;
+    transition: all var(--duration-fast) var(--ease-out-expo);
+  }
+  .tb-pill:hover { border-color: var(--border-hover); color: var(--text-primary); }
+  .tb-pill.attention { color: var(--brand-navy); border-color: rgba(31,69,110,0.3); background: rgba(31,69,110,0.04); }
+  .tb-pill .spin { animation: spin 1.8s linear infinite; display: inline-flex; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .tb-toggle {
+    width: 28px; height: 28px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--surface-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+  }
+
+  /* ── ContentArea Body ── */
+  .content-body {
+    flex: 1; min-height: 0;
+    padding: 0 var(--space-4) var(--space-4);
+    overflow-y: auto;
+    display: flex; flex-direction: column; gap: var(--space-3);
+  }
+
+  /* ── WorkspaceFolderStrip(工作区文件夹卡片)── */
+  .ws-strip {
+    background: var(--surface-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-xl);
+    padding: var(--space-3) var(--space-4);
+    box-shadow: var(--shadow-float);
+  }
+  .ws-strip-top {
+    display: flex; align-items: center; gap: var(--space-2);
+    margin-bottom: var(--space-2);
+    font-size: 12px;
+  }
+  .ws-strip-top .folder { color: var(--brand-gold-dark); }
+  .ws-strip-top .label { font-weight: 600; color: var(--text-primary); }
+  .ws-strip-top .quote { color: var(--text-tertiary); }
+  .ws-strip-top .path {
+    color: var(--text-secondary); font-family: var(--font-mono);
+    font-size: 11px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    flex: 1; min-width: 0;
+  }
+  .ws-strip-top .refresh {
+    color: var(--text-tertiary); background: transparent; border: none;
+    padding: 4px; border-radius: var(--radius-sm);
+  }
+  .ws-strip-top .refresh:hover { background: var(--surface-tertiary); color: var(--text-secondary); }
+  .ws-strip-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+  .ws-tab {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 4px 10px;
+    background: var(--surface-tertiary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-full);
+    color: var(--text-secondary);
+    font-size: 11px;
+    transition: all var(--duration-fast) var(--ease-out-expo);
+  }
+  .ws-tab:hover { border-color: var(--border-hover); }
+  .ws-tab.active {
+    background: rgba(31,69,110,0.08);
+    border-color: rgba(31,69,110,0.3);
+    color: var(--brand-navy);
+    font-weight: 500;
+  }
+  .ws-tab .arr { font-size: 9px; opacity: 0.5; }
+
+  /* ── 双栏白卡 ── */
+  .dual-panel {
+    flex: 1; min-height: 0;
+    display: flex;
+    background: var(--surface-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-float);
+    overflow: hidden;
+  }
+
+  /* ── 左栏:导入原件 ── */
+  .pane-left {
+    width: 360px; flex-shrink: 0;
+    display: flex; flex-direction: column;
+    border-right: 1px solid var(--border-primary);
+    min-width: 0;
+  }
+  .pane-header {
+    padding: 8px 12px;
+    background: var(--surface-tertiary);
+    border-bottom: 1px solid var(--border-primary);
+    flex-shrink: 0;
+  }
+  .pane-header h3 {
+    font-size: 13px; font-weight: 600; color: var(--text-primary);
+  }
+  .pane-header p {
+    font-size: 10px; color: var(--text-tertiary);
+    margin-top: 2px;
+  }
+  .pane-header .row {
+    display: flex; align-items: flex-start; justify-content: space-between;
+  }
+  .pane-header .badge {
+    font-size: 10px; padding: 1px 6px;
+    border-radius: var(--radius-full);
+    background: var(--color-accent-soft); color: var(--color-accent);
+  }
+  .pane-body {
+    flex: 1; min-height: 0;
+    overflow-y: auto;
+    padding: 4px;
+    background: var(--surface-primary);
+  }
+  .pane-body::-webkit-scrollbar { width: 8px; }
+  .pane-body::-webkit-scrollbar-thumb { background: var(--border-primary); border-radius: 4px; }
+
+  /* ── 文件行(左栏)── */
+  .file-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--surface-tertiary);
+    border-radius: 6px;
+    background: transparent; border-top: none; border-left: none; border-right: none;
+    width: 100%; text-align: left;
+    cursor: pointer;
+    transition: background var(--duration-fast) var(--ease-out-expo);
+  }
+  .file-row:hover { background: var(--surface-secondary); }
+  .file-row.selected {
+    background: rgba(31,69,110,0.08);
+    outline: 2px solid var(--brand-navy);
+    outline-offset: -1px;
+  }
+  .file-row.system {
+    background: rgba(255,192,0,0.06);
+    border-bottom-color: rgba(255,192,0,0.15);
+  }
+  .file-row .icon { flex-shrink: 0; color: var(--text-secondary); width: 14px; text-align: center; }
+  .file-row.system .icon { color: var(--brand-gold-dark); }
+  .file-row .name {
+    flex: 1; min-width: 0;
+    font-size: 12.5px; font-weight: 500;
+    color: var(--text-primary);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    line-height: 1.3;
+  }
+  .file-row.system .name::after {
+    content: ' · 系统生成';
+    color: var(--text-tertiary); font-size: 10px; font-weight: 400;
+  }
+  .file-row .time {
+    flex-shrink: 0; font-size: 10px;
+    color: var(--text-secondary); opacity: 0.6;
+    font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+  }
+
+  /* ── 右栏:工作区 ── */
+  .pane-right {
+    flex: 1; min-width: 0;
+    display: flex; flex-direction: column;
+  }
+  .date-group { padding: 4px; }
+  .date-group + .date-group { margin-top: 8px; }
+  .date-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 4px 4px;
+  }
+  .date-header .label { font-size: 11px; font-weight: 600; color: var(--text-secondary); }
+  .date-header .count { font-size: 10px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+
+  /* ── 工作区文件行(双行)── */
+  .ws-row {
+    display: flex; align-items: flex-start; gap: 8px;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--surface-tertiary);
+    border-radius: 6px;
+    background: transparent;
+    width: 100%; text-align: left;
+    border-top: none; border-left: none; border-right: none;
+    cursor: pointer;
+    transition: background var(--duration-fast) var(--ease-out-expo);
+  }
+  .ws-row:hover { background: var(--surface-secondary); }
+  .ws-row.selected {
+    background: rgba(31,69,110,0.08);
+    outline: 2px solid var(--brand-navy);
+    outline-offset: -1px;
+  }
+  .ws-row.system { background: rgba(255,192,0,0.06); }
+  .ws-row .icon { flex-shrink: 0; color: var(--text-secondary); width: 14px; padding-top: 2px; text-align: center; }
+  .ws-row.system .icon { color: var(--brand-gold-dark); }
+  .ws-row .body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+  .ws-row .row1 { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .ws-row .row1 .name {
+    flex: 1; min-width: 0;
+    font-size: 12.5px; font-weight: 500;
+    color: var(--text-primary); line-height: 1.3;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .badge-small {
+    flex-shrink: 0;
+    font-size: 10px; padding: 1px 6px;
+    border-radius: var(--radius-md);
+    background: var(--surface-tertiary); color: var(--text-secondary);
+  }
+  .badge-small.ok { background: rgba(52,199,89,0.1); color: #15803d; }
+  .badge-small.warn {
+    background: rgba(255,149,0,0.08); color: #b45309;
+    border: 1px solid rgba(255,149,0,0.2);
+  }
+  .badge-small.warn .retry {
+    margin-left: 4px; color: var(--color-accent);
+    text-decoration: underline; cursor: pointer;
+  }
+  .ws-row .row2 {
+    display: flex; align-items: center; gap: 4px; min-width: 0;
+    font-size: 9.5px; line-height: 1.3;
+    color: var(--text-tertiary);
+    flex-wrap: nowrap; overflow: hidden;
+  }
+  .ws-row .row2 .meta {
+    font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+    color: var(--text-tertiary);
+    flex-shrink: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  /* ── Inspector(380px, 浅色)── */
+  .inspector {
+    width: 380px; flex-shrink: 0;
+    background: var(--surface-primary);
+    border-left: 1px solid var(--border-primary);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .insp-header {
+    height: 48px; flex-shrink: 0;
+    display: flex; align-items: center; gap: 8px;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--border-primary);
+    background: var(--surface-primary);
+  }
+  .segmented {
+    flex: 1; display: flex; gap: 2px;
+    background: var(--surface-tertiary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-full);
+    padding: 3px;
+  }
+  .seg-tab {
+    flex: 1; padding: 4px 8px;
+    border-radius: var(--radius-full);
+    background: transparent; border: none;
+    font-size: 11px; font-weight: 500;
+    color: var(--text-tertiary);
+    transition: all var(--duration-fast) var(--ease-out-expo);
+  }
+  .seg-tab.active {
+    background: var(--surface-primary); color: var(--text-primary);
+    box-shadow: var(--shadow-sm);
+  }
+  .insp-close {
+    width: 24px; height: 24px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-tertiary);
+    background: transparent; border: none;
+    border-radius: var(--radius-sm);
+  }
+  .insp-close:hover { background: var(--surface-tertiary); }
+
+  .insp-body {
+    flex: 1; min-height: 0;
+    padding: var(--space-4);
+    overflow-y: auto;
+    display: flex; flex-direction: column; gap: var(--space-4);
+  }
+
+  /* ═══════════════════════════════════════════════════════
+     ⬇⬇⬇ INDEX 体系叠加元素(只在 Inspector 内 + Toolbar 提取按钮)⬇⬇⬇
+     ═══════════════════════════════════════════════════════ */
+
+  /* F2 反幻觉前言折叠卡(叠加在 Inspector body 顶部, DETAILS 之前)*/
+  .index-preamble {
+    background: rgba(31,69,110,0.04);
+    border: 1px solid rgba(31,69,110,0.2);
+    border-radius: var(--radius-md);
+    padding: 8px 10px;
+    font-size: 11px;
+  }
+  .index-preamble-head {
+    display: flex; align-items: center; gap: 6px;
+    color: var(--brand-navy); font-weight: 600;
+    user-select: none;
+  }
+  .index-preamble-head .toggle {
+    margin-left: auto; font-size: 10px; color: var(--text-tertiary);
+  }
+  .index-preamble.expanded .toggle::before { content: '收起 ▴'; }
+  .index-preamble:not(.expanded) .toggle::before { content: '展开 ▾'; }
+  .index-preamble-body {
+    display: none;
+    margin-top: 8px; padding-top: 8px;
+    border-top: 1px solid rgba(31,69,110,0.1);
+    color: var(--text-secondary); line-height: 1.5;
+  }
+  .index-preamble.expanded .index-preamble-body { display: block; }
+  .index-preamble-body code {
+    display: block; margin-top: 6px;
+    background: var(--surface-primary);
+    padding: 8px; border-radius: var(--radius-sm);
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--text-secondary); white-space: pre-line;
+  }
+  .index-preamble-body .config-link {
+    margin-top: 6px; font-size: 10px; color: var(--text-tertiary);
+  }
+
+  /* DETAILS 区(原生样式还原)*/
+  .insp-section-title {
+    font-size: 10px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.12em; color: var(--text-tertiary);
+    display: flex; align-items: center; gap: 6px;
+  }
+  .insp-section-title .ok { color: var(--color-success); }
+  .insp-section-title .pending {
+    font-size: 10px; font-weight: 500; text-transform: none;
+    letter-spacing: normal; color: var(--text-tertiary);
+    background: var(--surface-tertiary); padding: 1px 6px;
+    border-radius: var(--radius-full);
+    margin-left: auto; text-transform: none;
+  }
+  .insp-section-title .copy {
+    font-size: 10px; font-weight: 500; color: var(--text-secondary);
+    background: transparent; border: none;
+    display: flex; align-items: center; gap: 3px;
+    cursor: pointer; padding: 2px 6px;
+    border-radius: var(--radius-sm);
+    margin-left: auto; text-transform: none; letter-spacing: normal;
+  }
+  .insp-section-title .copy:hover { background: var(--surface-tertiary); color: var(--text-primary); }
+
+  .details-title {
+    font-size: 17px; font-weight: 600;
+    color: var(--text-primary); line-height: 1.3;
+    margin-top: 8px; margin-bottom: 8px;
+  }
+  .details-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 0;
+    font-size: 12px;
+  }
+  .details-row .ic {
+    color: var(--text-tertiary); width: 14px;
+    flex-shrink: 0; opacity: 0.6;
+  }
+  .details-row .lbl {
+    color: var(--text-secondary); width: 70px;
+    flex-shrink: 0; font-size: 11.5px;
+  }
+  .details-row .val {
+    color: var(--text-primary); flex: 1;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 12px;
+  }
+  .details-row .val.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+  /* AI 摘要区(叠加 F1 引文 + Layer 1 遵守率小点)*/
+  .ai-summary {
+    background: linear-gradient(135deg, rgba(59,130,246,0.04), rgba(255,192,0,0.03));
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-md);
+    padding: 10px;
+    font-size: 12px;
+    line-height: 1.55;
+  }
+  .ai-stmt {
+    display: flex; align-items: flex-start; gap: 6px;
+    padding: 4px 0;
+  }
+  .ai-stmt + .ai-stmt { border-top: 1px dashed var(--border-primary); }
+  .ai-stmt .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    margin-top: 6px; flex-shrink: 0;
+  }
+  .ai-stmt .dot.g { background: var(--color-success); }
+  .ai-stmt .dot.y { background: var(--color-warning); }
+  .ai-stmt .dot.r { background: var(--color-danger); }
+  .ai-stmt p { margin: 0; flex: 1; color: var(--text-primary); }
+  .cite {
+    display: inline-block;
+    font-size: 10px; padding: 1px 5px;
+    margin-left: 3px;
+    color: var(--color-accent);
+    background: var(--color-accent-soft);
+    border-radius: var(--radius-xs);
+    font-family: var(--font-mono);
+    cursor: pointer; vertical-align: middle;
+  }
+  .cite:hover { background: var(--color-accent); color: white; }
+  .compliance-bar {
+    margin-top: 8px; padding: 6px 8px;
+    background: var(--surface-tertiary);
+    border-radius: var(--radius-sm);
+    font-size: 10px; color: var(--text-tertiary);
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  }
+  .compliance-bar .legend-dot {
+    width: 5px; height: 5px; border-radius: 50%; display: inline-block;
+  }
+  .compliance-bar .score { margin-left: auto; font-weight: 600; color: var(--color-success); }
+
+  /* 提取内容(原生还原 + 叠加 F1 锚点)*/
+  .ext-container {
+    background: var(--surface-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-md);
+    padding: 10px;
+  }
+  .ext-md {
+    margin-top: 8px;
+    background: var(--surface-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-sm);
+    padding: 8px 10px;
+    font-size: 11.5px; line-height: 1.6;
+    color: var(--text-primary);
+    max-height: 200px; overflow-y: auto;
+  }
+  .ext-md::-webkit-scrollbar { width: 6px; }
+  .ext-md::-webkit-scrollbar-thumb { background: var(--border-primary); border-radius: 3px; }
+  .ext-md .seg {
+    display: block; padding: 3px 0;
+    border-left: 2px solid transparent;
+    padding-left: 6px;
+    transition: all var(--duration-fast) var(--ease-out-expo);
+  }
+  .ext-md .seg.highlight {
+    border-left-color: var(--brand-gold);
+    background: rgba(255,192,0,0.06);
+  }
+  .ext-md .anchor {
+    display: inline-block;
+    font-size: 9px; padding: 0 4px;
+    color: var(--color-accent);
+    background: var(--color-accent-soft);
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    margin-right: 4px;
+    cursor: pointer; vertical-align: middle;
+  }
+  .ext-md .anchor:hover { background: var(--color-accent); color: white; }
+  .ext-md .c-marker {
+    display: block;
+    font-size: 9px; color: var(--text-tertiary); opacity: 0.6;
+    font-family: var(--font-mono);
+    margin-top: 2px; padding-left: 6px;
+    user-select: none;
+  }
+  .ext-meta {
+    margin-top: 8px; font-size: 10px; color: var(--text-tertiary);
+    line-height: 1.5;
+  }
+  .ext-meta .row { display: flex; gap: 4px; }
+  .ext-meta .lbl { color: var(--text-secondary); }
+  .ext-meta a { color: var(--color-accent); text-decoration: none; }
+
+  /* INDEX 锚点统计条(叠加在提取内容下方)*/
+  .index-stats {
+    margin-top: 8px;
+    padding: 6px 8px;
+    background: rgba(255,192,0,0.06);
+    border: 1px solid rgba(255,192,0,0.2);
+    border-radius: var(--radius-sm);
+    font-size: 10px; color: #92600a;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .index-stats b { color: var(--brand-gold-dark); }
+
+  /* TAGS 区 */
+  .tags-wrap { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+  .tag-pill-r {
+    display: inline-flex; align-items: center;
+    font-size: 10px; padding: 2px 8px;
+    background: color-mix(in srgb, var(--brand-gold-light) 18%, var(--surface-primary));
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-full);
+    color: var(--text-secondary);
+  }
+  .tag-input-row {
+    display: flex; gap: 6px; margin-top: 8px;
+    align-items: center;
+  }
+  .tag-input {
+    flex: 1;
+    padding: 5px 10px; font-size: 11px;
+    background: var(--surface-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-full);
+    outline: none; color: var(--text-primary);
+  }
+  .tag-add {
+    padding: 5px 12px; font-size: 11px;
+    background: transparent;
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-full);
+    color: var(--text-secondary);
+  }
+
+  /* ─── 7 步流水线 Popover(叠加在"提取中"按钮上)─── */
+  .pipeline-pop {
+    position: absolute;
+    top: 100%; right: 0; margin-top: 8px;
+    width: 340px;
+    background: var(--surface-elevated);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-lg);
+    padding: var(--space-3);
+    z-index: 100;
+    display: none;
+  }
+  .pipeline-pop.open { display: block; }
+  .pipeline-pop h4 {
+    font-size: 12px; font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .pipeline-pop h4 .file {
+    color: var(--text-secondary); font-weight: 400; font-size: 11px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    flex: 1; min-width: 0;
+  }
+  .pipeline-steps { display: flex; flex-direction: column; gap: 4px; }
+  .pipeline-step {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 11px; color: var(--text-tertiary);
+    padding: 4px 4px;
+  }
+  .pipeline-step .ic {
+    width: 16px; height: 16px;
+    background: var(--surface-tertiary); color: var(--text-tertiary);
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; flex-shrink: 0; font-weight: 600;
+  }
+  .pipeline-step.done { color: var(--text-secondary); }
+  .pipeline-step.done .ic { background: var(--color-success); color: white; }
+  .pipeline-step.active { color: var(--text-primary); font-weight: 500; }
+  .pipeline-step.active .ic {
+    background: var(--color-accent); color: white;
+    animation: ppulse 1.5s ease-in-out infinite;
+  }
+  @keyframes ppulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.18); } }
+  .pipeline-pop .footer {
+    margin-top: 8px; padding-top: 8px;
+    border-top: 1px solid var(--border-primary);
+    font-size: 10px; color: var(--text-tertiary);
+  }
+
+  /* ─── Demo Banner ─── */
+  .demo-banner {
+    background: rgba(255,192,0,0.08);
+    border-bottom: 1px solid rgba(255,192,0,0.3);
+    padding: 5px 16px;
+    font-size: 11px; color: #92600a;
+    text-align: center; flex-shrink: 0;
+  }
+  .demo-banner b { font-weight: 600; }
+  .demo-banner code {
+    background: rgba(0,0,0,0.05);
+    padding: 0 4px;
+    border-radius: 3px;
+    font-family: var(--font-mono);
+  }
+
+  /* Resize Handle 装饰 */
+  .resize-handle {
+    width: 4px; flex-shrink: 0;
+    background: transparent;
+    cursor: col-resize;
+  }
+  .resize-handle:hover { background: rgba(31,69,110,0.1); }
+
+  /* 滚动条 */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-thumb { background: var(--border-primary); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--border-hover); }
+</style>
+</head>
+<body>
+
+<div class="demo-banner">
+  🎬 <b>Demo 1 v2</b> · <b>100% 还原现有布局</b> · 只在 <b>Inspector 内部</b> 和 <b>Toolbar 提取按钮</b> 叠加 INDEX 元素 ·
+  点击 <code>📑 _master_index.md</code> 或 <code>📚 _glossary.md</code> 看系统文件 · 点 Toolbar 的 <b>提取中 2 个</b> 看 7 步流水线 ·
+  点 Inspector MARKDOWN 预览的 <code>⟨00:00⟩</code> 看锚点跳转
+</div>
+
+<div class="app">
+
+  <!-- ─── TitleBar ─── -->
+  <header class="titlebar">
+    <div class="titlebar-bc">
+      <span class="lbl">项目列表</span>
+      <span class="sep">›</span>
+      <span class="cur">悬浮窗导入</span>
+    </div>
+    <div class="titlebar-right">
+      <button class="titlebar-btn" title="设置">⚙</button>
+    </div>
+  </header>
+
+  <div class="main">
+    <!-- ─── Sidebar ─── -->
+    <aside class="sidebar">
+      <div class="sb-brand">
+        <div class="logo">N</div>
+        <div class="text">
+          <div class="name">NoteCapt</div>
+          <div class="sub">KNOWLEDGE</div>
+        </div>
+      </div>
+
+      <div class="sb-scroll">
+        <div class="sb-group-label">工作区</div>
+        <button class="sb-item"><span class="ic">🔍</span><span class="lbl">搜索</span></button>
+        <button class="sb-item active"><span class="ic">📁</span><span class="lbl">项目</span></button>
+        <button class="sb-item"><span class="ic">🕐</span><span class="lbl">最近</span></button>
+        <button class="sb-item"><span class="ic">⭐</span><span class="lbl">收藏</span></button>
+
+        <div class="sb-group-label">知识系统</div>
+        <button class="sb-item"><span class="ic">🕯</span><span class="lbl">今日复习</span><span class="badge">3</span></button>
+        <button class="sb-item"><span class="ic">❓</span><span class="lbl">知识库</span></button>
+
+        <div class="sb-group-label">项目</div>
+        <button class="sb-item"><span class="ic">▼</span><span class="lbl">📁 悬浮窗导入</span></button>
+
+        <div class="sb-group-label">TAGS  295</div>
+        <input class="sb-tag-input" placeholder="过滤标签..." />
+        <button class="sb-item tag"><span class="ic">🏷</span><span class="lbl">知识管理</span><span class="badge">18</span></button>
+        <button class="sb-item tag"><span class="ic">🏷</span><span class="lbl">个人成长</span><span class="badge">16</span></button>
+        <button class="sb-item tag"><span class="ic">🏷</span><span class="lbl">音频素材</span><span class="badge">14</span></button>
+        <button class="sb-item tag"><span class="ic">🏷</span><span class="lbl">待整理</span><span class="badge">11</span></button>
+        <button class="sb-item tag"><span class="ic">🏷</span><span class="lbl">参考资料</span><span class="badge">10</span></button>
+        <button class="sb-item tag"><span class="ic">🏷</span><span class="lbl">参考书籍</span><span class="badge">10</span></button>
+        <button class="sb-item tag"><span class="ic">🏷</span><span class="lbl">电子书</span><span class="badge">10</span></button>
+        <button class="sb-item tag"><span class="ic">🏷</span><span class="lbl">认知提升</span><span class="badge">8</span></button>
+        <button class="sb-item tag"><span class="ic">🏷</span><span class="lbl">写方法</span><span class="badge">8</span></button>
+      </div>
+
+      <div class="sb-bottom">
+        <button class="sb-item"><span class="ic">⚙</span><span class="lbl">设置</span></button>
+        <button class="sb-item"><span class="ic">📦</span><span class="lbl">悬浮导入</span></button>
+      </div>
+    </aside>
+
+    <!-- ─── ContentArea ─── -->
+    <main class="content">
+
+      <!-- Toolbar -->
+      <div class="toolbar">
+        <button class="tb-back">‹ 项目</button>
+        <div class="tb-title">悬浮窗导入</div>
+        <div class="tb-actions">
+          <!-- 提取中按钮(叠加 7 步流水线 popover)-->
+          <button class="tb-pill attention" onclick="togglePipeline(event)" id="extracting-btn">
+            <span class="spin">🔄</span> 提取中 2 个
+            <div class="pipeline-pop" id="pipeline-pop" onclick="event.stopPropagation()">
+              <h4>
+                <span>📋 处理中文件</span>
+              </h4>
+              <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 8px; border-bottom: 1px solid var(--border-primary); padding-bottom: 6px;">
+                <b style="color: var(--text-secondary);">认知心理学 (Steven Pinker).pdf</b><br/>
+                共 7 步流水线 · 当前进度 4/7
+              </div>
+              <div class="pipeline-steps">
+                <div class="pipeline-step done">
+                  <div class="ic">✓</div>
+                  <span>检查是否重复导入</span>
+                </div>
+                <div class="pipeline-step done">
+                  <div class="ic">✓</div>
+                  <span>MarkItDown 转 Markdown</span>
+                </div>
+                <div class="pipeline-step done">
+                  <div class="ic">✓</div>
+                  <span><b>F1</b> · 注入位置锚点(每 1-2 句一个)</span>
+                </div>
+                <div class="pipeline-step active">
+                  <div class="ic">4</div>
+                  <span><b>F2</b> · 在 .md 头部注入反幻觉前言</span>
+                </div>
+                <div class="pipeline-step">
+                  <div class="ic">5</div>
+                  <span><b>F10</b> · 表格双重表示</span>
+                </div>
+                <div class="pipeline-step">
+                  <div class="ic">6</div>
+                  <span><b>F4</b> · 抽取关键术语 → _glossary.md</span>
+                </div>
+                <div class="pipeline-step">
+                  <div class="ic">7</div>
+                  <span><b>F3</b> · 增量更新 _master_index.md + 多标签</span>
+                </div>
+              </div>
+              <div class="footer">
+                💡 <b>新增交互</b>:这个 popover 是叠加在"提取中"按钮上的(原本只是个 badge)
+              </div>
+            </div>
+          </button>
+          <button class="tb-pill">✨ 知识关联</button>
+          <button class="tb-toggle" title="折叠右栏">▢</button>
+        </div>
+      </div>
+
+      <!-- Content Body -->
+      <div class="content-body">
+
+        <!-- WorkspaceFolderStrip -->
+        <div class="ws-strip">
+          <div class="ws-strip-top">
+            <span class="folder">📁</span>
+            <span class="label">工作区文件夹</span>
+            <span class="quote">「下载」</span>
+            <span class="path">/NoteCaptWorkPlace/18523c9f-271d-4a33-ac26-e6d9a8ff9865</span>
+            <button class="refresh" title="刷新">🔄</button>
+          </div>
+          <div class="ws-strip-tabs">
+            <button class="ws-tab active">全部素材</button>
+            <button class="ws-tab">导入 项目根目录 <span class="arr">↗</span></button>
+            <button class="ws-tab">AI 归类 1-项目 <span class="arr">↗</span></button>
+            <button class="ws-tab">AI 归类 2-领域 <span class="arr">↗</span></button>
+            <button class="ws-tab">AI 归类 3-资源 <span class="arr">↗</span></button>
+            <button class="ws-tab">AI 归类 __uncategorized__ <span class="arr">↗</span></button>
+            <button class="ws-tab">AI 归类 个人核心数据 <span class="arr">↗</span></button>
+          </div>
+        </div>
+
+        <!-- 双栏白卡 -->
+        <div class="dual-panel">
+
+          <!-- 左栏:导入原件 -->
+          <div class="pane-left">
+            <div class="pane-header">
+              <h3>导入原件</h3>
+              <p>拖入时的文件名 · 按导入时间新→旧 · 与访达原件一致</p>
+            </div>
+            <div class="pane-body">
+              <ul>
+                <li><button class="file-row"><span class="icon">📄</span><span class="name">真正的蒙氏教育在家庭精选: ...</span><span class="time">5/17 10:20:55</span></button></li>
+                <li><button class="file-row"><span class="icon">📄</span><span class="name">钟家成-产品经理.pdf</span><span class="time">5/17 10:20:26</span></button></li>
+                <li><button class="file-row"><span class="icon">📄</span><span class="name">钟家成-产品经理.pdf</span><span class="time">5/17 10:19:12</span></button></li>
+                <li><button class="file-row"><span class="icon">📄</span><span class="name">独居老人-沟通_陪伴主题.pdf</span><span class="time">5/17 10:01:02</span></button></li>
+                <li><button class="file-row"><span class="icon">📄</span><span class="name">真正的蒙氏教育在家庭精选: ...</span><span class="time">5/17 09:42:04</span></button></li>
+                <li><button class="file-row selected" onclick="selectFile('grace')"><span class="icon">🎵</span><span class="name">grace_副本.m4a</span><span class="time">5/17 09:41:53</span></button></li>
+                <li><button class="file-row"><span class="icon">📄</span><span class="name">钟家成-产品经理.pdf</span><span class="time">5/17 09:41:43</span></button></li>
+                <li><button class="file-row"><span class="icon">📄</span><span class="name">钟家成-产品经理.pdf</span><span class="time">5/17 09:41:10</span></button></li>
+                <li><button class="file-row"><span class="icon">📄</span><span class="name">钟家成-录音通知函.pdf</span><span class="time">5/17 09:41:07</span></button></li>
+                <li><button class="file-row"><span class="icon">📄</span><span class="name">保险严选指南(真正会理财的...</span><span class="time">5/17 09:23:23</span></button></li>
+                <li><button class="file-row"><span class="icon">📄</span><span class="name">IIG_Knowledge_Refinery_体...</span><span class="time">5/16 14:15:29</span></button></li>
+                <li><button class="file-row"><span class="icon">📄</span><span class="name">卡片笔记写作法 如何实现从阅...</span><span class="time">5/16 14:15:25</span></button></li>
+                <li><button class="file-row"><span class="icon">📄</span><span class="name">有效学习: 7步打造个人知识管...</span><span class="time">5/16 14:15:20</span></button></li>
+                <li><button class="file-row"><span class="icon">📄</span><span class="name">系统之美:决策者的系统思考...</span><span class="time">5/16 14:15:18</span></button></li>
+                <li><button class="file-row"><span class="icon">📄</span><span class="name">蒙台梭利儿童教育经典原著(套...</span><span class="time">5/16 14:15:20</span></button></li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="resize-handle"></div>
+
+          <!-- 右栏:工作区 -->
+          <div class="pane-right">
+            <div class="pane-header">
+              <div class="row">
+                <div>
+                  <h3>工作区</h3>
+                  <p>AI 整理后的 .md 文件 · 可拖拽到 Claude / ChatGPT</p>
+                </div>
+                <span class="badge">已定位对应文件 ↑</span>
+              </div>
+            </div>
+            <div class="pane-body">
+              <div class="date-group">
+                <div class="date-header">
+                  <span class="label">5月17日 悬浮窗导入</span>
+                  <span class="count">12 个 ↑</span>
+                </div>
+                <ul>
+                  <!-- F3 系统文件:_master_index.md(叠加在列表最上)-->
+                  <li><button class="ws-row system" onclick="selectFile('master_index')">
+                    <span class="icon">📑</span>
+                    <span class="body">
+                      <span class="row1">
+                        <span class="name">_master_index.md</span>
+                        <span class="badge-small">系统</span>
+                        <span class="badge-small ok">已同步</span>
+                      </span>
+                      <span class="row2">
+                        <span class="tag-pill-r" style="background: rgba(59,130,246,0.08); border-color: rgba(59,130,246,0.25); color: var(--color-accent);">📑 项目地图</span>
+                        <span class="meta">·  Markdown · 4.2 KB · 5/17 17:00 · 自动增量更新</span>
+                      </span>
+                    </span>
+                  </button></li>
+                  <!-- F4 系统文件:_glossary.md -->
+                  <li><button class="ws-row system" onclick="selectFile('glossary')">
+                    <span class="icon">📚</span>
+                    <span class="body">
+                      <span class="row1">
+                        <span class="name">_glossary.md</span>
+                        <span class="badge-small">系统</span>
+                        <span class="badge-small ok">12 待补</span>
+                      </span>
+                      <span class="row2">
+                        <span class="tag-pill-r" style="background: rgba(59,130,246,0.08); border-color: rgba(59,130,246,0.25); color: var(--color-accent);">📚 术语表</span>
+                        <span class="meta">·  Markdown · 1.8 KB · 5/17 17:00 · 3 确认 / 12 候选</span>
+                      </span>
+                    </span>
+                  </button></li>
+
+                  <!-- 原有文件 -->
+                  <li><button class="ws-row">
+                    <span class="icon">📄</span>
+                    <span class="body">
+                      <span class="row1">
+                        <span class="name">真正的蒙氏教育在家庭精选: 蒙台梭利家庭教育解决方案(套装共三...</span>
+                        <span class="badge-small">已重命名</span>
+                        <span class="badge-small ok">已就绪</span>
+                      </span>
+                      <span class="row2">
+                        <span class="tag-pill-r">亲子互动</span>
+                        <span class="tag-pill-r">家庭教育</span>
+                        <span class="tag-pill-r">早教</span>
+                        <span>+3</span>
+                        <span class="meta">·  Markdown · 181.3 KB · 5/17 10:20:55</span>
+                      </span>
+                    </span>
+                  </button></li>
+
+                  <li><button class="ws-row">
+                    <span class="icon">📄</span>
+                    <span class="body">
+                      <span class="row1">
+                        <span class="name">钟家成-产品经理.md</span>
+                        <span class="badge-small">已重命名</span>
+                        <span class="badge-small ok">已就绪</span>
+                      </span>
+                      <span class="row2">
+                        <span class="tag-pill-r">产品经理</span>
+                        <span class="tag-pill-r">钟家成</span>
+                        <span class="meta">·  Markdown · 10.8 KB · 5/17 10:20:26</span>
+                      </span>
+                    </span>
+                  </button></li>
+
+                  <li><button class="ws-row">
+                    <span class="icon">📄</span>
+                    <span class="body">
+                      <span class="row1">
+                        <span class="name">钟家成-产品经理.md</span>
+                        <span class="badge-small">已重命名</span>
+                        <span class="badge-small warn">⚠ 内置转换运行时未就绪,请重重应用 <span class="retry">重试</span></span>
+                      </span>
+                      <span class="row2">
+                        <span class="meta">Markdown · 793 B · 5/17 10:19:12</span>
+                      </span>
+                    </span>
+                  </button></li>
+
+                  <li><button class="ws-row">
+                    <span class="icon">📄</span>
+                    <span class="body">
+                      <span class="row1">
+                        <span class="name">独居老人-沟通_陪伴主题.md</span>
+                        <span class="badge-small">已重命名</span>
+                        <span class="badge-small warn">⚠ 内置转换运行时未就绪,请重重应用 <span class="retry">重试</span></span>
+                      </span>
+                      <span class="row2">
+                        <span class="tag-pill-r">养</span>
+                        <span class="tag-pill-r">参考资料</span>
+                        <span class="tag-pill-r">沟通</span>
+                        <span>+2</span>
+                        <span class="meta">·  Markdown · 813 B · 5/17 10:01:02</span>
+                      </span>
+                    </span>
+                  </button></li>
+
+                  <li><button class="ws-row">
+                    <span class="icon">📄</span>
+                    <span class="body">
+                      <span class="row1">
+                        <span class="name">蒙台梭利家庭教育解决方案_精选三册...md</span>
+                        <span class="badge-small">已重命名</span>
+                        <span class="badge-small ok">已就绪</span>
+                      </span>
+                      <span class="row2">
+                        <span class="tag-pill-r">亲子教育</span>
+                        <span class="tag-pill-r">家庭教育</span>
+                        <span class="tag-pill-r">早教</span>
+                        <span>+3</span>
+                        <span class="meta">·  Markdown · 873 B · 5/17 09:42:04</span>
+                      </span>
+                    </span>
+                  </button></li>
+
+                  <!-- 当前选中 -->
+                  <li><button class="ws-row selected" onclick="selectFile('grace')">
+                    <span class="icon">🎵</span>
+                    <span class="body">
+                      <span class="row1">
+                        <span class="name">grace_副本.md</span>
+                        <span class="badge-small">已重命名</span>
+                        <span class="badge-small ok">已就绪</span>
+                      </span>
+                      <span class="row2">
+                        <span class="tag-pill-r">待整理</span>
+                        <span class="tag-pill-r">未知内容</span>
+                        <span class="tag-pill-r">音频</span>
+                        <span class="meta">·  Markdown · 44.4 KB · 5/17 09:41:53 · 187 锚点</span>
+                      </span>
+                    </span>
+                  </button></li>
+
+                  <li><button class="ws-row">
+                    <span class="icon">📄</span>
+                    <span class="body">
+                      <span class="row1">
+                        <span class="name">钟家成-产品经理.md</span>
+                        <span class="badge-small">已重命名</span>
+                        <span class="badge-small warn">⚠ 内置转换运行时未就绪,请重重应用 <span class="retry">重试</span></span>
+                      </span>
+                      <span class="row2">
+                        <span class="tag-pill-r">产品经理</span>
+                        <span class="tag-pill-r">待项</span>
+                        <span class="tag-pill-r">家务</span>
+                        <span class="meta">·  Markdown · 793 B · 5/17 09:41:43</span>
+                      </span>
+                    </span>
+                  </button></li>
+
+                  <li><button class="ws-row">
+                    <span class="icon">📄</span>
+                    <span class="body">
+                      <span class="row1">
+                        <span class="name">钟家成-产品经理.md</span>
+                        <span class="badge-small">已重命名</span>
+                        <span class="badge-small warn">⚠ 内置转换运行时未就绪,请重重应用 <span class="retry">重试</span></span>
+                      </span>
+                      <span class="row2">
+                        <span class="tag-pill-r">个人简历</span>
+                        <span class="tag-pill-r">产品经理</span>
+                        <span class="tag-pill-r">求职料</span>
+                        <span class="meta">·  Markdown · 793 B · 5/17 09:41:10</span>
+                      </span>
+                    </span>
+                  </button></li>
+
+                  <li><button class="ws-row">
+                    <span class="icon">📄</span>
+                    <span class="body">
+                      <span class="row1">
+                        <span class="name">钟家成-录用通知函.md</span>
+                        <span class="badge-small">已重命名</span>
+                        <span class="badge-small warn">⚠ 内置转换运行时未就绪,请重重应用 <span class="retry">重试</span></span>
+                      </span>
+                      <span class="row2">
+                        <span class="tag-pill-r">个人档案</span>
+                        <span class="tag-pill-r">入职</span>
+                        <span class="tag-pill-r">录用通知</span>
+                        <span>+1</span>
+                        <span class="meta">·  Markdown · 799 B · 5/17 09:41:07</span>
+                      </span>
+                    </span>
+                  </button></li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </main>
+
+    <!-- ─── Inspector ─── -->
+    <aside class="inspector">
+      <div class="insp-header">
+        <div class="segmented">
+          <button class="seg-tab active">详情</button>
+          <button class="seg-tab">知识关联</button>
+          <button class="seg-tab">时间流</button>
+        </div>
+        <button class="insp-close">✕</button>
+      </div>
+
+      <div class="insp-body" id="insp-body">
+
+        <!-- ⬇ INDEX 叠加 1:F2 反幻觉前言折叠卡(在 DETAILS 之前)-->
+        <div class="index-preamble" id="preamble" onclick="togglePreamble(event)">
+          <div class="index-preamble-head">
+            🔒 反幻觉前言已注入 <span style="font-size:10px;color:var(--text-tertiary);font-weight:400">(F2)</span>
+            <span class="toggle"></span>
+          </div>
+          <div class="index-preamble-body" onclick="event.stopPropagation()">
+            本份 .md 头部已嵌入"AI 工作约束"前言。拖到 Claude / ChatGPT 时对方 AI 立即继承,无需手动配置。
+            <code>&lt;!-- @notecapt-prompt v=1 scope=audio-transcript --&gt;
+
+🔒 NoteCapt Grounded Prompt
+本文件由 NoteCapt 从 grace_副本.m4a 转录(时长 18 min)。
+回答时请:
+1. 只引用本文档内容
+2. 每条引用必须挂 ⟨mm:ss⟩ 时间戳锚
+3. 找不到时直说"在本文档中未找到"
+4. 标记为 [?…?] 的片段为 ASR 低置信度,请提示用户核对原音频</code>
+            <div class="config-link">📍 配置位置:设置 → AI Prompt → grounded_prompt_preamble</div>
+          </div>
+        </div>
+
+        <!-- DETAILS(原生还原)-->
+        <div>
+          <div class="insp-section-title">DETAILS</div>
+          <div class="details-title" id="d-title">grace_副本.md</div>
+          <div class="details-row"><span class="ic">🕐</span><span class="lbl">Captured</span><span class="val mono" id="d-cap">2026/5/17 09:41:53</span></div>
+          <div class="details-row"><span class="ic">💾</span><span class="lbl">Source</span><span class="val mono" id="d-src">8c8cd56a-893b-48de-b83a-...</span></div>
+          <div class="details-row"><span class="ic">📦</span><span class="lbl">Type</span><span class="val" id="d-type">MARKDOWN</span></div>
+        </div>
+
+        <!-- AI 摘要(改造:不再是"待生成",而是已生成 + F1 引文 + Layer 1 遵守率小点)-->
+        <div>
+          <div class="insp-section-title">
+            ✨ AI 摘要 <span style="text-transform:none;letter-spacing:normal;font-weight:400;color:var(--text-tertiary);font-size:10px;">(每句挂 F1 引文 + Layer 1 遵守率)</span>
+          </div>
+          <div class="ai-summary" style="margin-top:8px" id="ai-summary">
+            <div class="ai-stmt">
+              <div class="dot g"></div>
+              <p>本录音是一次产品调研对话,主要讨论 NoteCapt 的硬件场景使用情况。<span class="cite" onclick="jumpAnchor('00:00')">⟨00:00⟩</span></p>
+            </div>
+            <div class="ai-stmt">
+              <div class="dot g"></div>
+              <p>受访者自我介绍是另一位 PM,负责硬件相关工作。<span class="cite" onclick="jumpAnchor('00:23')">⟨00:23⟩</span></p>
+            </div>
+            <div class="ai-stmt">
+              <div class="dot y"></div>
+              <p>调研重点在数据出口和录音方式,受访者强调自己是<mark style="background:rgba(255,192,0,0.3);padding:0 2px">最终端的使用者</mark>。<span class="cite" onclick="jumpAnchor('00:45')">⟨00:45⟩</span></p>
+            </div>
+          </div>
+          <div class="compliance-bar">
+            遵守率:
+            <span class="legend-dot" style="background:var(--color-success)"></span> 引用真实
+            <span class="legend-dot" style="background:var(--color-warning)"></span> 待复核
+            <span class="legend-dot" style="background:var(--color-danger)"></span> 引用编造
+            <span class="score">本次 3/3 ✓ 100%</span>
+          </div>
+        </div>
+
+        <!-- 提取内容(原生还原 + 在 MARKDOWN 预览里叠加 F1 锚点)-->
+        <div>
+          <div class="insp-section-title">
+            📖 提取内容 <span class="ok">✓</span>
+          </div>
+          <div class="ext-container" style="margin-top:8px">
+            <div class="insp-section-title" style="text-transform: none; letter-spacing: normal;">
+              MARKDOWN 预览
+              <button class="copy">📋 复制</button>
+            </div>
+            <div class="ext-md" id="ext-md">
+              <span class="seg" id="seg-1">
+                <span class="anchor" onclick="jumpAnchor('00:00')">⟨00:00⟩</span>喂 Hello e喂你好。嗨哈哈 H你好你好。约了几天了?
+                <span class="c-marker">&lt;!-- @c id=c001 a=00:00.s1 asr=0.88 --&gt;</span>
+              </span>
+              <span class="seg" id="seg-2">
+                <span class="anchor" onclick="jumpAnchor('00:23')">⟨00:23⟩</span>那个呢我直接那个大概就我自我介绍一下,那个我也是那个 PM。
+                <span class="c-marker">&lt;!-- @c id=c002 a=00:23.s1 asr=0.91 --&gt;</span>
+              </span>
+              <span class="seg" id="seg-3">
+                <span class="anchor" onclick="jumpAnchor('00:32')">⟨00:32⟩</span>然后呢嗯我们在调研那 LM 相关的一些呃场景,吧对嗯好的。
+                <span class="c-marker">&lt;!-- @c id=c003 a=00:32.s1 asr=0.85 --&gt;</span>
+              </span>
+              <span class="seg" id="seg-4">
+                <span class="anchor" onclick="jumpAnchor('00:45')">⟨00:45⟩</span>但是你不是硬件的吗?对我是硬件的对。我是硬件的。
+                <span class="c-marker">&lt;!-- @c id=c004 a=00:45.s1 asr=0.92 --&gt;</span>
+              </span>
+              <span class="seg" id="seg-5">
+                <span class="anchor" onclick="jumpAnchor('01:02')">⟨01:02⟩</span>那就是了解一下那个关于因为 NotebookLM 它其实属于<mark style="background:rgba(255,192,0,0.3);padding:0 2px">最终端的这个使用</mark>嘛对吧?
+                <span class="c-marker">&lt;!-- @c id=c005 a=01:02.s1 asr=0.79 user_highlight=yellow --&gt;</span>
+              </span>
+              <span class="seg" id="seg-6">
+                <span class="anchor" onclick="jumpAnchor('01:15')">⟨01:15⟩</span>你的数据出口嘛那我们想看看吧在那个数据使用上面,包括你怎么录音的等等。
+                <span class="c-marker">&lt;!-- @c id=c006 a=01:15.s1 asr=0.83 --&gt;</span>
+              </span>
+            </div>
+            <!-- INDEX 锚点统计条(叠加在 MARKDOWN 预览下)-->
+            <div class="index-stats">
+              📍 <b>INDEX 统计</b>:共 <b>187</b> 个锚点(平均 1-2 句一个)· 1 处用户标注 ⚠ · 文件大小 vs 原音频转录文本 <b>+1.4%</b>
+            </div>
+            <div class="ext-meta">
+              <div class="row"><span class="lbl">质量:</span><span>较弱 (1) · 转换来源:</span><span>audio_asr_iflytek</span></div>
+              <div class="row"><span class="lbl">转换信息:</span><a href="#">audio_asr_iflytek ↗</a></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- TAGS(原生还原)-->
+        <div>
+          <div class="insp-section-title">🏷 TAGS</div>
+          <div class="tags-wrap">
+            <span class="tag-pill-r">待整理</span>
+            <span class="tag-pill-r">未知内容</span>
+            <span class="tag-pill-r">音频</span>
+          </div>
+          <div class="tag-input-row">
+            <input class="tag-input" placeholder="新标签..." />
+            <button class="tag-add">+ 添加</button>
+          </div>
+        </div>
+
+      </div>
+    </aside>
+  </div>
+</div>
+
+<script>
+  // ─── Pipeline popover ───
+  function togglePipeline(e) {
+    e.stopPropagation();
+    document.getElementById('pipeline-pop').classList.toggle('open');
+  }
+  document.addEventListener('click', (e) => {
+    const pop = document.getElementById('pipeline-pop');
+    const btn = document.getElementById('extracting-btn');
+    if (!btn.contains(e.target)) pop.classList.remove('open');
+  });
+
+  // ─── Preamble 折叠 ───
+  function togglePreamble(e) {
+    document.getElementById('preamble').classList.toggle('expanded');
+  }
+
+  // ─── 锚点跳转 + 高亮 ───
+  function jumpAnchor(ts) {
+    // 找对应 seg
+    const allSegs = document.querySelectorAll('#ext-md .seg .anchor');
+    allSegs.forEach(a => {
+      if (a.textContent === `⟨${ts}⟩`) {
+        const seg = a.closest('.seg');
+        seg.classList.add('highlight');
+        seg.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        setTimeout(() => seg.classList.remove('highlight'), 2500);
+      }
+    });
+  }
+
+  // ─── 文件切换(简化版,只为演示)───
+  const FILES = {
+    grace: {
+      title: 'grace_副本.md', cap: '2026/5/17 09:41:53',
+      src: '8c8cd56a-893b-48de-b83a-...', type: 'MARKDOWN'
+    },
+    master_index: {
+      title: '_master_index.md', cap: '2026/5/17 17:00:00',
+      src: '系统自动生成(每次新文件入库后增量更新)', type: 'MARKDOWN · MASTER INDEX'
+    },
+    glossary: {
+      title: '_glossary.md', cap: '2026/5/17 17:00:00',
+      src: '系统自动抽取(可用户编辑)', type: 'MARKDOWN · GLOSSARY'
+    }
+  };
+  function selectFile(key) {
+    const f = FILES[key];
+    if (!f) return;
+    document.getElementById('d-title').textContent = f.title;
+    document.getElementById('d-cap').textContent = f.cap;
+    document.getElementById('d-src').textContent = f.src;
+    document.getElementById('d-type').textContent = f.type;
+    // 高亮列表
+    document.querySelectorAll('.file-row, .ws-row').forEach(el => el.classList.remove('selected'));
+    event.target.closest('.file-row, .ws-row')?.classList.add('selected');
+  }
+</script>
+
+</body>
+</html>

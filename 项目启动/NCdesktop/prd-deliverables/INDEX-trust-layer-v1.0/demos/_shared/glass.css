@@ -1,0 +1,289 @@
+/* ═══════════════════════════════════════════════════════
+   NCdesktop — 参考稿：白卡片 + 浅边框 + 柔和浮起阴影
+   ═══════════════════════════════════════════════════════ */
+
+/* ─── 标准面板 ─── */
+.glass-panel {
+  background: var(--surface-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-float);
+}
+
+/* ─── 侧边栏（深色驾驶舱） ─── */
+.glass-sidebar {
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--sidebar-border);
+  box-shadow: 2px 0 12px -4px rgba(0, 0, 0, 0.15);
+}
+
+/* ─── 标题栏（与侧栏同色系） ─── */
+.glass-titlebar {
+  background: var(--sidebar-bg);
+  border-bottom: 1px solid var(--sidebar-border);
+}
+
+/* ─── 工具栏 / 标题栏 ─── */
+.glass-toolbar {
+  background: var(--surface-primary);
+  border-bottom: 1px solid var(--border-primary);
+  box-shadow: var(--shadow-sm);
+}
+
+/* ─── 卡片 ─── */
+.glass-card-elevated {
+  background: var(--surface-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-float);
+  transition: border-color var(--duration-fast) var(--ease-out-expo),
+    box-shadow var(--duration-fast) var(--ease-out-expo),
+    transform var(--duration-fast) var(--ease-out-expo);
+}
+
+.glass-card-elevated:hover {
+  border-color: var(--border-hover);
+  box-shadow: var(--shadow-md);
+}
+
+/* ─── 弹出菜单/下拉框 ─── */
+.glass-popover {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
+}
+
+/* ═══════════════════════════════════════════════════════
+   交互动效组件
+   ═══════════════════════════════════════════════════════ */
+
+.glass-interactive {
+  transition: transform var(--duration-fast) var(--ease-out-expo),
+    border-color var(--duration-fast) var(--ease-out-expo),
+    background-color var(--duration-fast) var(--ease-out-expo);
+}
+
+.glass-interactive:hover {
+  transform: translateY(-0.5px);
+  border-color: var(--border-hover);
+}
+
+.glass-interactive:active {
+  transform: translateY(0) scale(0.98);
+  transition-duration: var(--duration-instant);
+}
+
+/* ═══════════════════════════════════════════════════════
+   按钮
+   ═══════════════════════════════════════════════════════ */
+
+.btn-glass {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  height: 36px;
+  padding: 0 var(--space-5);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-primary);
+  background: var(--surface-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out-expo);
+  user-select: none;
+  box-shadow: var(--shadow-sm);
+}
+
+.btn-glass:hover {
+  background: var(--surface-tertiary);
+  border-color: var(--border-hover);
+  transform: translateY(-0.5px);
+}
+
+.btn-glass:active {
+  transform: scale(0.97);
+  transition-duration: var(--duration-instant);
+}
+
+.btn-glass-accent {
+  background: var(--surface-tertiary);
+  border-color: var(--border-primary);
+  color: var(--text-primary);
+}
+
+/* ═══════════════════════════════════════════════════════
+   输入框
+   ═══════════════════════════════════════════════════════ */
+
+.input-glass {
+  width: 100%;
+  height: 38px;
+  padding: 0 var(--space-4);
+  font-size: var(--text-base);
+  color: var(--text-primary);
+  background: var(--surface-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-full);
+  outline: none;
+  transition: all var(--duration-fast) var(--ease-out-expo);
+  box-shadow: var(--shadow-sm);
+}
+
+.input-glass:focus {
+  border-color: var(--brand-navy);
+  box-shadow: 0 0 0 3px rgba(31, 69, 110, 0.12);
+}
+
+.input-glass::placeholder {
+  color: var(--text-tertiary);
+}
+
+/* ═══════════════════════════════════════════════════════
+   侧边栏列表项
+   ═══════════════════════════════════════════════════════ */
+
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 3px 8px;
+  font-size: 11.5px;
+  color: var(--sidebar-text-muted);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out-expo);
+  position: relative;
+  border: none;
+  background: none;
+}
+
+.sidebar-item:hover {
+  background: var(--sidebar-hover-bg);
+  color: var(--sidebar-text);
+}
+
+.sidebar-item.active {
+  background: var(--sidebar-active-bg);
+  color: var(--sidebar-active-fg);
+  font-weight: 600;
+}
+
+.sidebar-item .sidebar-item-icon {
+  color: var(--sidebar-text-muted);
+  opacity: 0.7;
+  transition: all var(--duration-fast) var(--ease-out-expo);
+}
+
+.sidebar-item:hover .sidebar-item-icon {
+  color: var(--sidebar-text);
+  opacity: 1;
+}
+
+.sidebar-item.active .sidebar-item-icon {
+  color: var(--sidebar-active-fg);
+  opacity: 1;
+}
+
+/* ═══════════════════════════════════════════════════════
+   标签胶囊（参考图 pastel / pill）
+   ═══════════════════════════════════════════════════════ */
+
+.tag-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9.5px;
+  font-weight: 500;
+  padding: 1px 5px;
+  line-height: 1.4;
+  border-radius: 9999px;
+  border: 1px solid var(--border-primary);
+  background: color-mix(in srgb, var(--brand-gold-light) 18%, var(--surface-primary));
+  color: var(--text-secondary);
+}
+
+/* ═══════════════════════════════════════════════════════
+   文字样式
+   ═══════════════════════════════════════════════════════ */
+
+.text-on-glass {
+  color: var(--text-secondary);
+  -webkit-font-smoothing: antialiased;
+  font-weight: 500;
+}
+
+/* ═══════════════════════════════════════════════════════
+   焦点指示器（无障碍）
+   ═══════════════════════════════════════════════════════ */
+
+.glass-interactive:focus-visible,
+.btn-glass:focus-visible,
+.sidebar-item:focus-visible {
+  outline: 2px solid var(--brand-navy);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(31, 69, 110, 0.15);
+}
+
+/* ═══════════════════════════════════════════════════════
+   模态框入场动效
+   ═══════════════════════════════════════════════════════ */
+
+@keyframes glass-modal-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.glass-modal-enter {
+  animation: glass-modal-enter var(--duration-normal) var(--ease-out-expo);
+}
+
+/* ═══════════════════════════════════════════════════════
+   macOS 标题栏拖拽区域
+   ═══════════════════════════════════════════════════════ */
+
+.titlebar-drag-region {
+  -webkit-app-region: drag;
+}
+
+.titlebar-drag-region button,
+.titlebar-drag-region input,
+.titlebar-drag-region a,
+.titlebar-drag-region [data-no-drag] {
+  -webkit-app-region: no-drag;
+}
+
+/* ═══════════════════════════════════════════════════════
+   Magic Moment 动效（收敛版）
+   ═══════════════════════════════════════════════════════ */
+
+@keyframes magic-pulse {
+  0%, 100% {
+    box-shadow: var(--shadow-sm);
+  }
+  50% {
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════
+   无障碍回退 — 减少动效
+   ═══════════════════════════════════════════════════════ */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

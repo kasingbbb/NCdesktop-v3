@@ -1,0 +1,1082 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>Demo 2 · F7 召回透明化(知识理解页 · 镜子反馈)</title>
+<link rel="stylesheet" href="./_shared/tokens.css" />
+<link rel="stylesheet" href="./_shared/glass.css" />
+<style>
+  /* ═══ Demo 2 · 100% 还原 KnowledgeUnderstandingPage 五区段
+        只在 AI 输出 ↔ 原文锚点的连接处叠加 F7 元素
+        F7 在 v2 哲学下不是 RAG 召回列表,而是"原文覆盖率可视化 + 双向锚点" ═══ */
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    height: 100%; font-family: var(--font-system);
+    background: var(--surface-canvas);
+    color: var(--text-primary);
+    font-size: var(--text-sm);
+    -webkit-font-smoothing: antialiased;
+  }
+  ul, li { list-style: none; }
+  button { font-family: inherit; cursor: pointer; }
+
+  /* ─── App Layout(沿用 Demo 1)─── */
+  .app { display: flex; flex-direction: column; height: 100vh; }
+
+  /* TitleBar */
+  .titlebar {
+    height: 48px; flex-shrink: 0;
+    background: var(--sidebar-bg);
+    border-bottom: 1px solid var(--sidebar-border);
+    display: flex; align-items: center;
+    padding-left: 80px; padding-right: var(--space-4);
+  }
+  .titlebar-bc { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; }
+  .titlebar-bc .lbl { color: rgba(255,255,255,0.4); }
+  .titlebar-bc .sep { color: rgba(255,255,255,0.25); font-size: 11px; }
+  .titlebar-bc .cur { color: rgba(255,255,255,0.8); font-weight: 500; }
+  .titlebar-right { width: 80px; display: flex; justify-content: flex-end; padding-right: 12px; }
+  .titlebar-btn {
+    width: 26px; height: 26px;
+    display: flex; align-items: center; justify-content: center;
+    color: rgba(255,255,255,0.4);
+    border-radius: var(--radius-sm);
+    background: transparent; border: none;
+  }
+  .titlebar-btn:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.7); }
+
+  .main { display: flex; flex: 1; min-height: 0; }
+
+  /* Sidebar(简化:Demo 2 聚焦中间区域,Sidebar 只示意)*/
+  .sidebar {
+    width: 220px; flex-shrink: 0;
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--sidebar-border);
+    display: flex; flex-direction: column;
+    padding: var(--space-3);
+    color: var(--sidebar-text-muted);
+  }
+  .sb-brand {
+    display: flex; align-items: center; gap: var(--space-2);
+    padding: var(--space-2);
+    margin-bottom: var(--space-3);
+  }
+  .sb-brand .logo {
+    width: 32px; height: 32px;
+    border-radius: var(--radius-md);
+    background: rgba(255,255,255,0.06);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--sidebar-text); font-weight: 600;
+  }
+  .sb-brand .name { font-size: 13px; font-weight: 600; color: var(--sidebar-text); }
+  .sb-brand .sub { font-size: 10px; color: var(--sidebar-text-dim); letter-spacing: 0.04em; }
+  .sb-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 3px 8px;
+    border-radius: var(--radius-md);
+    color: var(--sidebar-text-muted);
+    font-size: 11.5px;
+    background: transparent; border: none;
+    width: 100%; text-align: left;
+  }
+  .sb-item:hover { background: var(--sidebar-hover-bg); color: var(--sidebar-text); }
+  .sb-item.active { background: var(--sidebar-active-bg); color: var(--sidebar-active-fg); font-weight: 600; }
+  .sb-item .ic { width: 14px; opacity: 0.7; flex-shrink: 0; }
+  .sb-item .badge {
+    background: rgba(255,255,255,0.08); color: var(--sidebar-text-muted);
+    font-size: 10px; padding: 0 6px; border-radius: var(--radius-full);
+    margin-left: auto;
+  }
+  .sb-group-label {
+    font-size: 10px; color: var(--sidebar-text-dim);
+    padding: var(--space-3) var(--space-2) 4px;
+    letter-spacing: 0.04em;
+  }
+
+  /* ─── KnowledgeUnderstandingPage 主容器 ─── */
+  .ku-page {
+    flex: 1; min-width: 0;
+    background: var(--surface-primary);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* 顶部导航条 */
+  .ku-nav {
+    flex-shrink: 0;
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-primary);
+    background: var(--surface-primary);
+  }
+  .ku-back {
+    display: flex; align-items: center; gap: 6px;
+    background: transparent; border: none;
+    color: var(--text-secondary); font-size: 13px;
+    padding: 4px 8px; border-radius: var(--radius-sm);
+  }
+  .ku-back:hover { background: var(--surface-tertiary); color: var(--text-primary); }
+  .ku-concept {
+    margin-left: auto;
+    display: flex; align-items: center; gap: 8px;
+    font-size: 13px; font-weight: 500;
+    color: var(--text-primary);
+  }
+  .ku-concept .book { color: var(--brand-navy); }
+
+  /* TransparencyBanner */
+  .transparency {
+    flex-shrink: 0;
+    display: flex; align-items: flex-start; gap: 8px;
+    padding: 10px 16px;
+    background: rgba(255,192,0,0.08);
+    border: 1px solid rgba(255,192,0,0.25);
+    color: var(--text-secondary);
+    font-size: 11.5px; line-height: 1.5;
+  }
+  .transparency .ic { color: var(--brand-gold); margin-top: 2px; flex-shrink: 0; }
+  .transparency b { color: var(--text-primary); font-weight: 600; }
+
+  /* 滚动内容区 */
+  .ku-scroll {
+    flex: 1; min-height: 0;
+    overflow-y: auto;
+  }
+  .ku-content {
+    max-width: 720px;
+    padding: 24px;
+    display: flex; flex-direction: column; gap: 24px;
+  }
+  .ku-divider {
+    height: 1px;
+    background: var(--border-primary);
+  }
+
+  /* 共用区段标题 */
+  .ku-section { display: flex; flex-direction: column; gap: 12px; }
+  .ku-section-head {
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .ku-section-title {
+    font-size: 13px; font-weight: 600;
+    color: var(--text-primary);
+  }
+  .ku-section-tools { display: flex; gap: 8px; align-items: center; }
+  .ku-mini-btn {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: transparent; border: none;
+    color: var(--text-tertiary);
+    font-size: 11px;
+    padding: 2px 4px; border-radius: var(--radius-sm);
+  }
+  .ku-mini-btn:hover { color: var(--text-secondary); background: var(--surface-tertiary); }
+
+  /* ─── SummarySection ─── */
+  .ku-summary {
+    padding: 12px;
+    border-radius: var(--radius-md);
+    background: var(--surface-secondary);
+    border: 1px solid var(--border-primary);
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+  }
+  .ku-summary .src-tags {
+    margin-top: 8px;
+    display: flex; flex-wrap: wrap; gap: 4px;
+  }
+  .ku-src-tag {
+    font-size: 10px;
+    padding: 1px 8px;
+    background: var(--surface-tertiary);
+    color: var(--text-tertiary);
+    border-radius: var(--radius-full);
+  }
+
+  /* ─── ExplanationSection ─── */
+  .ku-expl-item {
+    padding: 10px 12px;
+    background: var(--surface-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-md);
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: var(--text-primary);
+  }
+  .ku-expl-item + .ku-expl-item { margin-top: 8px; }
+  .ku-expl-label {
+    font-size: 10px; font-weight: 600;
+    color: var(--brand-navy);
+    text-transform: uppercase; letter-spacing: 0.08em;
+    margin-bottom: 4px;
+  }
+  .ku-expl-src {
+    margin-top: 6px;
+    font-size: 10px; color: var(--text-tertiary);
+    display: flex; align-items: center; gap: 4px;
+  }
+  .ku-essence {
+    padding: 14px;
+    background: linear-gradient(135deg, rgba(31,69,110,0.06), rgba(255,192,0,0.04));
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-md);
+    font-size: 14px;
+    font-weight: 500;
+    font-style: italic;
+    color: var(--text-primary);
+    line-height: 1.5;
+    text-align: center;
+  }
+
+  /* ─── UserNotesSection ─── */
+  .ku-textarea {
+    width: 100%;
+    padding: 12px;
+    border-radius: var(--radius-md);
+    background: var(--surface-secondary);
+    border: 1px solid var(--border-primary);
+    color: var(--text-primary);
+    font-size: 13px;
+    line-height: 1.6;
+    resize: vertical;
+    outline: none;
+    min-height: 100px;
+    font-family: inherit;
+  }
+  .ku-textarea:focus { border-color: var(--brand-navy); box-shadow: 0 0 0 3px rgba(31,69,110,0.12); }
+  .ku-note-actions {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-top: 8px;
+  }
+  .ku-save-status {
+    font-size: 11px; color: var(--text-tertiary);
+  }
+  .ku-action-row { display: flex; gap: 6px; align-items: center; }
+  .ku-btn-secondary {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 4px 12px; font-size: 11px;
+    background: var(--surface-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-md);
+    color: var(--text-secondary);
+  }
+  .ku-btn-secondary:hover { border-color: var(--border-hover); }
+  .ku-btn-primary {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 4px 12px; font-size: 11px;
+    font-weight: 500;
+    background: var(--brand-navy); color: white;
+    border: 1px solid var(--brand-navy);
+    border-radius: var(--radius-md);
+  }
+  .ku-btn-primary:hover { background: var(--brand-navy-light); }
+
+  /* ─── MirrorFeedback ─── */
+  .ku-mirror {
+    padding: 16px;
+    background: rgba(31,69,110,0.04);
+    border: 1px solid rgba(31,69,110,0.15);
+    border-radius: var(--radius-md);
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .ku-mirror-head {
+    display: flex; align-items: center; gap: 8px;
+  }
+  .ku-mirror-head .check {
+    color: var(--brand-navy);
+  }
+  .ku-mirror-head .title {
+    font-size: 13px; font-weight: 500;
+    color: var(--text-primary);
+  }
+  .ku-mirror-covered {
+    padding-left: 20px;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .ku-mirror-covered li {
+    list-style: disc; list-style-position: outside;
+    font-size: 11.5px; line-height: 1.6;
+    color: var(--text-secondary);
+  }
+  .ku-mirror-add {
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .ku-mirror-add-title {
+    font-size: 13px; color: var(--text-secondary);
+  }
+  .ku-mirror-add-list {
+    padding-left: 12px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .ku-mirror-add-item {
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .ku-mirror-add-item .text {
+    font-size: 13px; line-height: 1.5;
+    color: var(--text-secondary);
+  }
+  .ku-mirror-diff {
+    font-size: 13px; line-height: 1.6;
+    color: var(--text-secondary);
+  }
+
+  /* SourceEvidence(原生)*/
+  .src-evidence {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 10px;
+    padding: 2px 8px;
+    background: var(--surface-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-full);
+    color: var(--text-tertiary);
+    cursor: pointer;
+    transition: all var(--duration-fast) var(--ease-out-expo);
+  }
+  .src-evidence:hover {
+    border-color: var(--brand-navy);
+    color: var(--brand-navy);
+  }
+
+  /* ═══════════════════════════════════════════════════════
+     ⬇⬇⬇ F7 召回透明化元素(只叠加在 5 个具体位置)⬇⬇⬇
+     ═══════════════════════════════════════════════════════ */
+
+  /* F7-1:可点击锚点(在所有 AI 输出文本中)*/
+  .cite {
+    display: inline-block;
+    font-size: 10px;
+    padding: 1px 5px;
+    margin-left: 3px;
+    color: var(--color-accent);
+    background: var(--color-accent-soft);
+    border-radius: var(--radius-xs);
+    font-family: var(--font-mono);
+    cursor: pointer;
+    vertical-align: middle;
+    transition: all var(--duration-fast) var(--ease-out-expo);
+  }
+  .cite:hover { background: var(--color-accent); color: white; }
+  .cite.boost { background: rgba(255,192,0,0.2); color: #92600a; }
+  .cite.boost:hover { background: var(--brand-gold); color: white; }
+
+  /* F7-2:遵守率小点(在 AI 输出每段旁)*/
+  .compliance-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    display: inline-block; margin-right: 5px;
+    vertical-align: middle;
+  }
+  .compliance-dot.g { background: var(--color-success); }
+  .compliance-dot.y { background: var(--color-warning); }
+  .compliance-dot.r { background: var(--color-danger); }
+
+  /* F7-3:引用基准按钮(镜子反馈头部右上)*/
+  .ku-mirror-meta {
+    display: flex; align-items: center; gap: 8px;
+    margin-left: auto;
+    font-size: 11px; color: var(--text-tertiary);
+  }
+  .ku-mirror-meta .badge {
+    background: rgba(31,69,110,0.08);
+    color: var(--brand-navy);
+    padding: 1px 6px;
+    border-radius: var(--radius-full);
+    font-size: 10px;
+    font-weight: 500;
+  }
+  .ku-cite-baseline {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: transparent; border: 1px solid var(--border-primary);
+    padding: 3px 8px; border-radius: var(--radius-md);
+    font-size: 10px;
+    color: var(--text-secondary);
+  }
+  .ku-cite-baseline:hover { border-color: var(--brand-navy); color: var(--brand-navy); }
+
+  /* F7-4:原文覆盖率热图(叠加在镜子反馈下方的新区块)*/
+  .ku-coverage {
+    padding: 14px;
+    background: var(--surface-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-md);
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .ku-coverage-head {
+    display: flex; align-items: center; gap: 8px;
+  }
+  .ku-coverage-head .ic { font-size: 14px; }
+  .ku-coverage-head .title {
+    font-size: 12.5px; font-weight: 600;
+    color: var(--text-primary);
+  }
+  .ku-coverage-head .sub {
+    font-size: 10px; color: var(--text-tertiary);
+    font-weight: 400;
+  }
+  .ku-coverage-toggle {
+    margin-left: auto;
+    display: flex; gap: 2px;
+    background: var(--surface-tertiary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-full);
+    padding: 2px;
+  }
+  .ku-coverage-toggle button {
+    background: transparent; border: none;
+    padding: 3px 10px;
+    font-size: 10px; color: var(--text-tertiary);
+    border-radius: var(--radius-full);
+  }
+  .ku-coverage-toggle button.active {
+    background: var(--surface-primary); color: var(--text-primary);
+    box-shadow: var(--shadow-sm); font-weight: 500;
+  }
+
+  .ku-coverage-legend {
+    display: flex; gap: 12px;
+    font-size: 10px; color: var(--text-tertiary);
+  }
+  .ku-coverage-legend .item {
+    display: flex; align-items: center; gap: 4px;
+  }
+  .ku-coverage-legend .swatch {
+    width: 12px; height: 12px;
+    border-radius: 3px;
+  }
+  .ku-coverage-legend .g { background: rgba(52,199,89,0.2); border: 1px solid rgba(52,199,89,0.4); }
+  .ku-coverage-legend .y { background: rgba(255,192,0,0.2); border: 1px solid rgba(255,192,0,0.4); }
+  .ku-coverage-legend .gray { background: var(--surface-tertiary); border: 1px solid var(--border-primary); }
+
+  .ku-coverage-text {
+    background: var(--surface-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-sm);
+    padding: 10px;
+    font-size: 12px;
+    line-height: 1.7;
+    max-height: 280px;
+    overflow-y: auto;
+  }
+  .ku-coverage-text::-webkit-scrollbar { width: 6px; }
+  .ku-coverage-text::-webkit-scrollbar-thumb { background: var(--border-primary); border-radius: 3px; }
+
+  .ku-seg {
+    display: block;
+    padding: 6px 8px;
+    margin-bottom: 6px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    position: relative;
+    transition: all var(--duration-fast) var(--ease-out-expo);
+  }
+  .ku-seg.green {
+    background: rgba(52,199,89,0.08);
+    border-left: 3px solid var(--color-success);
+  }
+  .ku-seg.yellow {
+    background: rgba(255,192,0,0.08);
+    border-left: 3px solid var(--brand-gold);
+  }
+  .ku-seg.gray {
+    background: var(--surface-primary);
+    border-left: 3px solid var(--border-primary);
+    color: var(--text-tertiary);
+  }
+  .ku-seg:hover {
+    transform: translateX(2px);
+  }
+  .ku-seg.highlight {
+    outline: 2px solid var(--brand-navy);
+    outline-offset: -2px;
+  }
+  .ku-seg .anchor {
+    display: inline-block;
+    font-size: 9px;
+    padding: 0 4px;
+    margin-right: 4px;
+    color: var(--color-accent);
+    background: var(--color-accent-soft);
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    vertical-align: middle;
+  }
+  .ku-seg.green .anchor { background: rgba(52,199,89,0.2); color: #15803d; }
+  .ku-seg.yellow .anchor { background: rgba(255,192,0,0.25); color: #92600a; }
+  .ku-seg .cite-count {
+    display: inline-flex;
+    font-size: 9px;
+    padding: 0 4px;
+    margin-left: 4px;
+    background: rgba(255,255,255,0.5);
+    border-radius: 3px;
+    color: var(--text-secondary);
+  }
+
+  .ku-coverage-stats {
+    display: flex; gap: 12px;
+    padding: 8px 10px;
+    background: var(--surface-tertiary);
+    border-radius: var(--radius-sm);
+    font-size: 11px;
+  }
+  .ku-coverage-stats .stat { display: flex; flex-direction: column; gap: 1px; }
+  .ku-coverage-stats .stat .label { font-size: 10px; color: var(--text-tertiary); }
+  .ku-coverage-stats .stat .value { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+  .ku-coverage-stats .stat .value.boost { color: var(--brand-gold-dark); }
+
+  /* F7-5:右键菜单 */
+  .ctx-menu {
+    position: fixed;
+    background: var(--surface-elevated);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-lg);
+    padding: 4px;
+    min-width: 220px;
+    z-index: 200;
+    display: none;
+  }
+  .ctx-menu.open { display: block; }
+  .ctx-menu-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 10px;
+    font-size: 12px; color: var(--text-primary);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+  }
+  .ctx-menu-item:hover { background: var(--surface-tertiary); }
+  .ctx-menu-item .ic { font-size: 12px; width: 16px; }
+  .ctx-menu-sep {
+    height: 1px;
+    background: var(--border-primary);
+    margin: 4px 8px;
+  }
+  .ctx-menu-hint {
+    padding: 4px 10px;
+    font-size: 10px;
+    color: var(--text-tertiary);
+  }
+
+  /* F7-6:引用基准弹窗 */
+  .ref-modal {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.35);
+    display: none;
+    align-items: center; justify-content: center;
+    z-index: 300;
+  }
+  .ref-modal.open { display: flex; }
+  .ref-modal-inner {
+    width: 520px; max-width: 90vw;
+    max-height: 80vh;
+    background: var(--surface-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-lg);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .ref-modal-head {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-primary);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .ref-modal-head .title { font-size: 14px; font-weight: 600; flex: 1; }
+  .ref-modal-head .close { background: transparent; border: none; color: var(--text-tertiary); padding: 4px; }
+  .ref-modal-body {
+    padding: 14px 16px;
+    overflow-y: auto;
+    font-size: 12px; line-height: 1.6;
+    color: var(--text-secondary);
+  }
+  .ref-modal-body .baseline-info {
+    padding: 10px;
+    background: rgba(31,69,110,0.04);
+    border: 1px solid rgba(31,69,110,0.15);
+    border-radius: var(--radius-sm);
+    margin-bottom: 12px;
+    font-size: 11px;
+  }
+  .ref-modal-body .baseline-info .row + .row { margin-top: 4px; }
+  .ref-modal-body .baseline-info .label { color: var(--text-tertiary); }
+  .ref-modal-body .baseline-info .value { color: var(--text-primary); font-weight: 500; }
+
+  /* ─── Anchor 跳转浮窗提示 ─── */
+  .anchor-pop {
+    position: fixed;
+    background: var(--text-primary); color: white;
+    padding: 5px 10px;
+    border-radius: var(--radius-md);
+    font-size: 11px;
+    box-shadow: var(--shadow-lg);
+    pointer-events: none;
+    opacity: 0;
+    z-index: 500;
+    max-width: 260px;
+    transition: opacity 0.15s;
+  }
+  .anchor-pop.show { opacity: 1; }
+
+  /* Demo Banner */
+  .demo-banner {
+    background: rgba(255,192,0,0.08);
+    border-bottom: 1px solid rgba(255,192,0,0.3);
+    padding: 5px 16px;
+    font-size: 11px; color: #92600a;
+    text-align: center; flex-shrink: 0;
+  }
+  .demo-banner b { font-weight: 600; }
+  .demo-banner code {
+    background: rgba(0,0,0,0.05);
+    padding: 0 4px; border-radius: 3px;
+    font-family: var(--font-mono);
+  }
+
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-thumb { background: var(--border-primary); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div class="demo-banner" style="background: rgba(220,38,38,0.06); border-bottom-color: rgba(220,38,38,0.3); color: #b91c1c;">
+  ⏸ <b>Demo 2 · P2 优先级 · 本期(M1-M3)不开发</b> ·
+  保留作为 <b>P2 阶段(M4 之后)F7 召回透明化完整版的设计参考</b> ·
+  M1-M3 阶段用户只能看到 Demo 1 里的"句末锚点 + 遵守率小点"轻量版,**没有覆盖率热图 / 引用基准 / 右键操作 / 强制纳入** 等本 Demo 演示的高级 UI
+</div>
+
+<div class="app">
+
+  <!-- TitleBar -->
+  <header class="titlebar">
+    <div class="titlebar-bc">
+      <span class="lbl">项目列表</span>
+      <span class="sep">›</span>
+      <span class="lbl">悬浮窗导入</span>
+      <span class="sep">›</span>
+      <span class="lbl">知识库</span>
+      <span class="sep">›</span>
+      <span class="cur">保险的本质</span>
+    </div>
+    <div class="titlebar-right">
+      <button class="titlebar-btn">⚙</button>
+    </div>
+  </header>
+
+  <div class="main">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sb-brand">
+        <div class="logo">N</div>
+        <div>
+          <div class="name">NoteCapt</div>
+          <div class="sub">KNOWLEDGE</div>
+        </div>
+      </div>
+
+      <div class="sb-group-label">工作区</div>
+      <button class="sb-item"><span class="ic">🔍</span>搜索</button>
+      <button class="sb-item"><span class="ic">📁</span>项目</button>
+      <button class="sb-item"><span class="ic">🕐</span>最近</button>
+      <button class="sb-item"><span class="ic">⭐</span>收藏</button>
+
+      <div class="sb-group-label">知识系统</div>
+      <button class="sb-item"><span class="ic">🕯</span>今日复习<span class="badge">3</span></button>
+      <button class="sb-item active"><span class="ic">❓</span>知识库</button>
+
+      <div class="sb-group-label">项目</div>
+      <button class="sb-item"><span class="ic">▼</span>📁 悬浮窗导入</button>
+    </aside>
+
+    <!-- KnowledgeUnderstandingPage 主区域 -->
+    <main class="ku-page">
+
+      <!-- ku-nav -->
+      <div class="ku-nav">
+        <button class="ku-back">‹ 返回概念列表</button>
+        <div class="ku-concept">
+          <span class="book">📖</span>
+          <span>保险的本质</span>
+        </div>
+      </div>
+
+      <!-- ⬇ F7-7 升级:TransparencyBanner 文案微调,强调每句挂锚点 ⬇ -->
+      <div class="transparency">
+        <span class="ic">⚠️</span>
+        <span>
+          以下解释基于你的文档由 AI 生成,<b>每句话都挂有 ⟨锚点⟩ 引用,点击可跳回原文核对</b>——AI 可能有理解偏差。
+        </span>
+      </div>
+
+      <!-- 滚动内容区 -->
+      <div class="ku-scroll">
+        <div class="ku-content">
+
+          <!-- ═══ SummarySection(你的文档怎么说)═══ -->
+          <section class="ku-section">
+            <div class="ku-section-head">
+              <h3 class="ku-section-title">你的文档怎么说</h3>
+              <div class="ku-section-tools">
+                <button class="ku-mini-btn">🔄 重新生成</button>
+              </div>
+            </div>
+            <div class="ku-summary">
+              <p>
+                <span class="compliance-dot g"></span>保险的本质是一种<b>风险分摊机制</b>——通过把个体的小概率大损失,分摊为群体的高概率小成本。<span class="cite" onclick="jumpAnchor('p.12')">⟨p.12⟩</span>
+              </p>
+              <p style="margin-top: 8px;">
+                <span class="compliance-dot g"></span>这种机制最早起源于古希腊的海上贸易,商人们通过共同承担风险来抵御海难损失。<span class="cite" onclick="jumpAnchor('p.12')">⟨p.12⟩</span>
+              </p>
+              <p style="margin-top: 8px;">
+                <span class="compliance-dot g"></span>需要明确的是,保险不是赚钱工具,而是<b>财务防御工具</b>(您在原文 P13 标注过这点)。<span class="cite boost" onclick="jumpAnchor('p.13')">⟨p.13 ⭐⟩</span>
+              </p>
+              <p style="margin-top: 8px;">
+                <span class="compliance-dot y"></span>投资型保险产品在某种程度上违背了保险作为防御工具的初衷。<span class="cite" onclick="jumpAnchor('p.13')">⟨p.13⟩</span>
+              </p>
+              <div class="src-tags">
+                <span class="ku-src-tag">📄 保险保障一生 (李元霸).pdf</span>
+                <span class="ku-src-tag">🎙 滂策资本 04-01.m4a</span>
+              </div>
+            </div>
+          </section>
+
+          <div class="ku-divider"></div>
+
+          <!-- ═══ ExplanationSection(理解框架)═══ -->
+          <section class="ku-section">
+            <div class="ku-section-head">
+              <h3 class="ku-section-title">理解框架</h3>
+              <div class="ku-section-tools">
+                <button class="ku-mini-btn">🔄 重新生成</button>
+              </div>
+            </div>
+            <div class="ku-expl-item">
+              <div class="ku-expl-label">核心机制</div>
+              保险通过<b>大数法则</b>把个体的小概率大损失,转化为可计算的群体期望成本。<span class="cite" onclick="jumpAnchor('p.12')">⟨p.12⟩</span>
+              <div class="ku-expl-src">📄 来自 保险保障一生 (李元霸).pdf P12</div>
+            </div>
+            <div class="ku-expl-item">
+              <div class="ku-expl-label">典型场景</div>
+              ① 重疾险:对抗一生中可能发生的大病; ② 意外险:对抗低概率高破坏的意外事件; ③ 寿险:为家庭遗属提供经济屏障。<span class="cite" onclick="jumpAnchor('p.14')">⟨p.14⟩</span>
+              <div class="ku-expl-src">📄 来自 保险保障一生 (李元霸).pdf P14</div>
+            </div>
+            <div class="ku-expl-item">
+              <div class="ku-expl-label">常见误区</div>
+              ❌ "保险是投资"——保险的本质是防御,投资型保险通常杠杆率低、性价比差。<span class="cite boost" onclick="jumpAnchor('p.13')">⟨p.13 ⭐⟩</span>
+              <div class="ku-expl-src">📄 来自 保险保障一生 (李元霸).pdf P13 · 包含您的高亮</div>
+            </div>
+            <div class="ku-essence">
+              💡 "保险买的是<b>财务防御</b>,不是<b>投资回报</b>"
+            </div>
+          </section>
+
+          <div class="ku-divider"></div>
+
+          <!-- ═══ UserNotesSection(用你自己的话解释这个概念)═══ -->
+          <section class="ku-section">
+            <h3 class="ku-section-title">用你自己的话解释这个概念</h3>
+
+            <textarea class="ku-textarea" id="user-note">保险其实就是大家凑钱,然后谁倒霉了就用这笔钱救他。一个人交的少,但如果真的出了大事,赔付的金额会很多。所以它不是用来赚钱的,而是为了在意外发生时不让家庭崩溃。</textarea>
+
+            <div class="ku-note-actions">
+              <span class="ku-save-status">已保存</span>
+              <div class="ku-action-row">
+                <button class="ku-btn-secondary">💡 给我一个出发点</button>
+                <button class="ku-btn-primary" onclick="showMirror()">💬 和 AI 核对一下</button>
+              </div>
+            </div>
+
+            <!-- MirrorFeedbackDisplay -->
+            <div class="ku-mirror" id="mirror" style="margin-top: 8px;">
+              <div class="ku-mirror-head">
+                <span class="check">✅</span>
+                <span class="title">你的解释捕捉到了 2 个核心要点 ✓</span>
+                <div class="ku-mirror-meta">
+                  <span class="badge">F7</span>
+                  <!-- ⬇ F7-3:引用基准按钮 ⬇ -->
+                  <button class="ku-cite-baseline" onclick="showRefModal()">📑 引用基准</button>
+                </div>
+              </div>
+
+              <!-- 已捕捉要点(每条挂锚点)-->
+              <ul class="ku-mirror-covered">
+                <li>"大家凑钱救倒霉的人" → 抓住了<b>风险分摊机制</b>这个核心 <span class="cite" onclick="jumpAnchor('p.12')">⟨p.12⟩</span></li>
+                <li>"不是用来赚钱的" → 抓住了<b>保险作为防御工具</b>(您原文标注过) <span class="cite boost" onclick="jumpAnchor('p.13')">⟨p.13 ⭐⟩</span></li>
+              </ul>
+
+              <div class="ku-mirror-add">
+                <p class="ku-mirror-add-title">在你的文档里,还有一些关于这个概念的角度你可能感兴趣:</p>
+                <div class="ku-mirror-add-list">
+                  <div class="ku-mirror-add-item">
+                    <p class="text">
+                      你的讲解没提到<b>大数法则</b>这个理论根基——保险公司之所以能赚钱,正是因为大数法则让赔付期望可计算。<span class="cite" onclick="jumpAnchor('p.12')">⟨p.12⟩</span>
+                    </p>
+                    <div>
+                      <span class="src-evidence">📄 保险保障一生 P12</span>
+                    </div>
+                  </div>
+                  <div class="ku-mirror-add-item">
+                    <p class="text">
+                      原文 P14 列举了三种典型场景(重疾 / 意外 / 寿险),你的讲解笼统说"出了大事",可以更具体。<span class="cite" onclick="jumpAnchor('p.14')">⟨p.14⟩</span>
+                    </p>
+                    <div>
+                      <span class="src-evidence">📄 保险保障一生 P14</span>
+                    </div>
+                  </div>
+                  <div class="ku-mirror-add-item">
+                    <p class="text">
+                      原文 P18 还讨论了"杠杆率"这个评估保险性价比的核心指标,你完全没涉及。<span class="cite" onclick="jumpAnchor('p.18')">⟨p.18⟩</span>
+                    </p>
+                    <div>
+                      <span class="src-evidence">📄 保险保障一生 P18</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <p class="ku-mirror-diff">
+                你的理解和文档的一个细微差异是:你说"赔付金额会很多",但原文 P15 强调赔付金额取决于<b>事先约定的保额</b>,不是无上限的。<span class="cite" onclick="jumpAnchor('p.15')">⟨p.15⟩</span>
+              </p>
+            </div>
+
+            <!-- ═══ ⬇ F7-4:原文覆盖率热图(F7 杀手锏 · 叠加在镜子反馈下方的新区块)⬇ ═══ -->
+            <div class="ku-coverage" style="margin-top: 12px;">
+              <div class="ku-coverage-head">
+                <span class="ic">📖</span>
+                <div>
+                  <div class="title">原文覆盖率热图 <span class="sub">F7 召回透明化 · v2 哲学</span></div>
+                </div>
+                <div class="ku-coverage-toggle">
+                  <button class="active">原文视角</button>
+                  <button>AI 输出视角</button>
+                </div>
+              </div>
+
+              <div class="ku-coverage-legend">
+                <div class="item"><div class="swatch g"></div>AI 已引用</div>
+                <div class="item"><div class="swatch y"></div>潜在漏读(相关但未引用)</div>
+                <div class="item"><div class="swatch gray"></div>本概念无关</div>
+              </div>
+
+              <div class="ku-coverage-text" id="coverage-text">
+                <span class="ku-seg green" id="seg-p12" oncontextmenu="showCtx(event, 'p.12.s1')">
+                  <span class="anchor">⟨p.12.s1⟩</span>保险是一种风险分摊机制,本质上是把个体的小概率大损失,分摊为群体的高概率小成本。<span class="cite-count">引用 ×3</span>
+                </span>
+                <span class="ku-seg green" oncontextmenu="showCtx(event, 'p.12.s3')">
+                  <span class="anchor">⟨p.12.s3⟩</span>这种机制最早起源于古希腊的海上贸易,商人们通过共同承担风险来抵御海难损失。<span class="cite-count">引用 ×1</span>
+                </span>
+                <span class="ku-seg yellow" oncontextmenu="showCtx(event, 'p.12.s5')">
+                  <span class="anchor">⟨p.12.s5⟩</span>大数法则的本质是:当样本量足够大时,事件的实际频率会收敛到理论概率。这正是保险定价的数学基础。<span class="cite-count">⚠ 0 次,但相关度 0.82</span>
+                </span>
+                <span class="ku-seg green" id="seg-p13" oncontextmenu="showCtx(event, 'p.13.s1')">
+                  <span class="anchor">⟨p.13.s1⟩</span>保险的本质不是赚钱工具,而是一种<mark style="background:rgba(255,192,0,0.3);padding:0 2px">财务防御工具</mark>(用户标注)。<span class="cite-count">引用 ×2 · 用户高亮 ⭐</span>
+                </span>
+                <span class="ku-seg green" oncontextmenu="showCtx(event, 'p.13.s2')">
+                  <span class="anchor">⟨p.13.s2⟩</span>理解这个本质才能正确选择保险产品。投资型保险往往违背了这个本质。<span class="cite-count">引用 ×1</span>
+                </span>
+                <span class="ku-seg yellow" oncontextmenu="showCtx(event, 'p.14.s1')">
+                  <span class="anchor">⟨p.14.s1⟩</span>保险产品按防御对象可分为重疾险 / 意外险 / 寿险三大类。<span class="cite-count">⚠ 0 次,但相关度 0.76</span>
+                </span>
+                <span class="ku-seg gray">
+                  <span class="anchor">⟨p.14.s4⟩</span>保险公司的偿付能力通常由银保监会进行年度评估……<span class="cite-count">无关</span>
+                </span>
+                <span class="ku-seg green" id="seg-p15" oncontextmenu="showCtx(event, 'p.15.s1')">
+                  <span class="anchor">⟨p.15.s1⟩</span>赔付金额取决于事先约定的<b>保额</b>,不是发生事故时的实际损失。<span class="cite-count">引用 ×1(差异提醒)</span>
+                </span>
+                <span class="ku-seg yellow" oncontextmenu="showCtx(event, 'p.18.s1')">
+                  <span class="anchor">⟨p.18.s1⟩</span>评估保险性价比的核心指标是<b>杠杆率</b>——保额与已交保费的比值。<span class="cite-count">⚠ 0 次,但相关度 0.79</span>
+                </span>
+                <span class="ku-seg gray">
+                  <span class="anchor">⟨p.20.s2⟩</span>退保的财务损失通常远高于用户预期……<span class="cite-count">无关</span>
+                </span>
+              </div>
+
+              <div class="ku-coverage-stats">
+                <div class="stat">
+                  <span class="label">本概念相关锚点</span>
+                  <span class="value">10</span>
+                </div>
+                <div class="stat">
+                  <span class="label">AI 已引用</span>
+                  <span class="value" style="color: var(--color-success);">5</span>
+                </div>
+                <div class="stat">
+                  <span class="label">潜在漏读</span>
+                  <span class="value" style="color: var(--brand-gold-dark);">3 ⚠</span>
+                </div>
+                <div class="stat">
+                  <span class="label">覆盖率</span>
+                  <span class="value">50%</span>
+                </div>
+                <div class="stat" style="margin-left: auto;">
+                  <span class="label">右键操作</span>
+                  <span class="value boost" style="font-size: 11px;">强制纳入 / 标记不相关</span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <div class="ku-divider"></div>
+
+          <!-- ═══ RelationNetworkSection(精简)═══ -->
+          <section class="ku-section">
+            <h3 class="ku-section-title">概念关系网络</h3>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+              <span class="ku-src-tag">⬆ 风险管理</span>
+              <span class="ku-src-tag">⬆ 大数法则 <span style="color:var(--brand-gold-dark)">(本次潜在漏读)</span></span>
+              <span class="ku-src-tag">→ 重疾险</span>
+              <span class="ku-src-tag">→ 杠杆率 <span style="color:var(--brand-gold-dark)">(本次潜在漏读)</span></span>
+              <span class="ku-src-tag">↔ 投资 vs 保险</span>
+            </div>
+          </section>
+
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- F7-5:右键菜单 -->
+<div class="ctx-menu" id="ctx-menu">
+  <div class="ctx-menu-hint" id="ctx-target">锚点:p.12.s1</div>
+  <div class="ctx-menu-sep"></div>
+  <div class="ctx-menu-item" onclick="ctxAction('boost')">
+    <span class="ic">⭐</span>强制纳入下次问答
+  </div>
+  <div class="ctx-menu-item" onclick="ctxAction('exclude')">
+    <span class="ic">🚫</span>标记为本概念不相关
+  </div>
+  <div class="ctx-menu-item" onclick="ctxAction('open')">
+    <span class="ic">📄</span>在原文打开此锚点
+  </div>
+  <div class="ctx-menu-sep"></div>
+  <div class="ctx-menu-item" onclick="ctxAction('related')">
+    <span class="ic">🔗</span>查看引用了这段的所有 AI 输出
+  </div>
+</div>
+
+<!-- F7-6:引用基准弹窗 -->
+<div class="ref-modal" id="ref-modal" onclick="hideRefModal(event)">
+  <div class="ref-modal-inner" onclick="event.stopPropagation()">
+    <div class="ref-modal-head">
+      <span style="font-size: 16px;">📑</span>
+      <span class="title">AI 看到的引用基准</span>
+      <button class="close" onclick="hideRefModal({target: document.getElementById('ref-modal')})">✕</button>
+    </div>
+    <div class="ref-modal-body">
+      <div class="baseline-info">
+        <div class="row"><span class="label">概念:</span> <span class="value">保险的本质</span></div>
+        <div class="row"><span class="label">触发动作:</span> <span class="value">用户镜子反馈核对</span></div>
+        <div class="row"><span class="label">模型:</span> <span class="value">claude-3.7-sonnet</span></div>
+        <div class="row"><span class="label">注入完整原文:</span> <span class="value">保险保障一生.md(全文 14,820 字 ≈ 4,200 tokens)</span></div>
+        <div class="row"><span class="label">注入 Master Index:</span> <span class="value">✓ 项目地图(8 个目录条目)</span></div>
+        <div class="row"><span class="label">注入 Glossary:</span> <span class="value">✓ 3 个已确认术语</span></div>
+        <div class="row"><span class="label">注入 Anti-Hallucination 前言:</span> <span class="value">✓</span></div>
+        <div class="row"><span class="label">prompt 总长度:</span> <span class="value">约 4,580 tokens(占 Claude 上限的 2.3%)</span></div>
+      </div>
+
+      <p style="margin-bottom: 8px;"><b>v2 哲学要点</b>:</p>
+      <ul style="padding-left: 20px; display: flex; flex-direction: column; gap: 4px;">
+        <li>❌ <b>不是 RAG 召回</b>:NoteCapt 不做向量检索 / 召回 top-N chunks</li>
+        <li>✅ <b>而是全文喂入</b>:LLM 看到完整原文 + 所有锚点字典,可以引用任何位置</li>
+        <li>✅ <b>引用真实性保证</b>:LLM 返回的 ⟨p.X⟩ 锚点全部对照 anchors 字典验证;编造的锚点会被 Layer 1 标红</li>
+        <li>✅ <b>覆盖率热图</b>:对比"LLM 实际引用的锚点" vs "原文中相关度高的锚点",暴露潜在漏读</li>
+      </ul>
+
+      <p style="margin-top: 12px; padding: 10px; background: var(--surface-tertiary); border-radius: var(--radius-sm); font-size: 11px;">
+        💡 <b>未来 M2 优化方向</b>:当原文超过 LLM 上下文窗口时(如 280 页 PDF ≈ 70k tokens),prompt 拼装层会自动触发"分批问答"或提示用户走 F8 切片包。
+      </p>
+    </div>
+  </div>
+</div>
+
+<div class="anchor-pop" id="anchor-pop"></div>
+
+<script>
+  // ─── 锚点跳转 + 高亮 ───
+  function jumpAnchor(p) {
+    // 模拟跳到原文覆盖率热图里对应段
+    const seg = document.getElementById('seg-' + p);
+    if (seg) {
+      seg.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      seg.classList.add('highlight');
+      setTimeout(() => seg.classList.remove('highlight'), 2500);
+    } else {
+      // 如果没具体 id,尝试找包含 ⟨p.X⟩ 的 seg
+      document.querySelectorAll('.ku-seg').forEach(el => {
+        if (el.textContent.includes(`⟨${p}`)) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          el.classList.add('highlight');
+          setTimeout(() => el.classList.remove('highlight'), 2500);
+        }
+      });
+    }
+  }
+
+  // ─── 锚点 hover 浮窗 ───
+  document.addEventListener('mouseover', (e) => {
+    const t = e.target.closest('.cite, .anchor');
+    if (!t) return;
+    const pop = document.getElementById('anchor-pop');
+    const text = t.textContent.trim();
+    pop.textContent = `锚点 ${text} · 点击跳转`;
+    pop.style.left = e.pageX + 10 + 'px';
+    pop.style.top = e.pageY + 14 + 'px';
+    pop.classList.add('show');
+  });
+  document.addEventListener('mouseout', (e) => {
+    if (e.target.closest('.cite, .anchor')) {
+      document.getElementById('anchor-pop').classList.remove('show');
+    }
+  });
+  document.addEventListener('mousemove', (e) => {
+    const pop = document.getElementById('anchor-pop');
+    if (pop.classList.contains('show')) {
+      pop.style.left = e.pageX + 10 + 'px';
+      pop.style.top = e.pageY + 14 + 'px';
+    }
+  });
+
+  // ─── 右键菜单 ───
+  function showCtx(e, anchorId) {
+    e.preventDefault();
+    e.stopPropagation();
+    const menu = document.getElementById('ctx-menu');
+    document.getElementById('ctx-target').textContent = '锚点:' + anchorId;
+    menu.style.left = e.clientX + 'px';
+    menu.style.top = e.clientY + 'px';
+    menu.classList.add('open');
+  }
+  function ctxAction(type) {
+    const target = document.getElementById('ctx-target').textContent;
+    const msg = {
+      'boost': `已 ⭐ 强制纳入下次问答:${target}\n(后续 AI 调用 prompt 会显式提示"必须引用此段")`,
+      'exclude': `已 🚫 标记不相关:${target}\n(后续此段不会出现在本概念的覆盖率热图)`,
+      'open': `📄 跳转到 ${target} 在原文 .md 的对应位置...`,
+      'related': `🔗 引用了 ${target} 的 AI 输出:\n• 你的文档怎么说 第 1 段\n• 镜子反馈"捕捉到的核心要点"第 1 条`
+    };
+    alert(msg[type] || '操作:' + type);
+    document.getElementById('ctx-menu').classList.remove('open');
+  }
+  document.addEventListener('click', () => {
+    document.getElementById('ctx-menu').classList.remove('open');
+  });
+
+  // ─── 引用基准弹窗 ───
+  function showRefModal() {
+    document.getElementById('ref-modal').classList.add('open');
+  }
+  function hideRefModal(e) {
+    if (e.target.id === 'ref-modal') {
+      document.getElementById('ref-modal').classList.remove('open');
+    }
+  }
+
+  // ─── Mirror 反馈触发(已默认显示)───
+  function showMirror() {
+    document.getElementById('mirror').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+</script>
+
+</body>
+</html>

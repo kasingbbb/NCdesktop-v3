@@ -1,0 +1,96 @@
+# ─────────────────────────────────────
+# 系统文件
+# ─────────────────────────────────────
+.DS_Store
+**/.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# ─────────────────────────────────────
+# 编辑器 / IDE
+# ─────────────────────────────────────
+.vscode/
+.idea/
+.cursor/
+*.sublime-*
+
+# ─────────────────────────────────────
+# Claude Code 元数据 + worktrees (所有层级)
+# ─────────────────────────────────────
+.claude/
+**/.claude/
+
+# ─────────────────────────────────────
+# Node / pnpm 依赖
+# ─────────────────────────────────────
+node_modules/
+**/node_modules/
+.pnpm-store/
+**/.pnpm-store/
+*.tsbuildinfo
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+
+# ─────────────────────────────────────
+# Rust / Tauri 构建产物 (含 17 GB target/)
+# ─────────────────────────────────────
+**/target/
+**/Cargo.lock.bak
+项目启动/NCdesktop/src-tauri/gen/
+项目启动/NCdesktop/src-tauri/WixTools/
+
+# ─────────────────────────────────────
+# 前端构建产物
+# ─────────────────────────────────────
+项目启动/NCdesktop/dist/
+项目启动/NCdesktop/build/
+website/dist/
+website/dist-ssr/
+website/dist.tar.gz
+
+# ─────────────────────────────────────
+# Tauri 嵌入资源 (363 MB PBS Python + venv)
+# 由 scripts/prepare-embedded-*.sh 生成
+# ─────────────────────────────────────
+项目启动/NCdesktop/src-tauri/resources/python/
+项目启动/NCdesktop/src-tauri/resources/markitdown-venv/
+
+# ─────────────────────────────────────
+# 二进制 / 分发包 (单文件大小超 GitHub 上限)
+# 5/2 的 DMG 已经备份到 backups/, 不进 git
+# ─────────────────────────────────────
+*.dmg
+*.exe
+*.app/
+*.tar.gz
+
+# ─────────────────────────────────────
+# 环境变量 / 凭据
+# ─────────────────────────────────────
+.env
+.env.local
+*.local
+项目启动/NCdesktop/src-tauri/.bundled-creds.env
+
+# ─────────────────────────────────────
+# 日志 / 临时
+# ─────────────────────────────────────
+*.log
+logs/
+tmp/
+temp/
+
+# ─────────────────────────────────────
+# 真实样本数据(原 项目启动/NCdesktop/.gitignore 已禁止)
+# 这些后缀禁止以明文形式进入主仓
+# ─────────────────────────────────────
+samples/
+**/samples/
+*.enc
+
+# ─────────────────────────────────────
+# rust_out 之类临时输出
+# ─────────────────────────────────────
+项目启动/NCdesktop/rust_out

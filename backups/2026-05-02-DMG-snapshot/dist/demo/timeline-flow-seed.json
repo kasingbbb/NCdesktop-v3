@@ -1,0 +1,18 @@
+{
+  "description": "时间流右栏演示数据（与 src/lib/demo-timeline-data.ts 同步，便于外部工具或后续导入）",
+  "days": [
+    {
+      "dateIso": "2026-03-25",
+      "dateLabel": "3月25日 · 周三",
+      "recordings": [
+        {
+          "id": "rec-a",
+          "fileName": "课堂讨论-上午.m4a",
+          "clockStart": "09:28",
+          "durationLabel": "42:18",
+          "tags": ["录音", "Time Tag 09:28", "时长 42:18"]
+        }
+      ]
+    }
+  ]
+}

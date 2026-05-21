@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  NoteCapt — Hardened Runtime entitlements (minimal)
+
+  Required for embedded standalone Python (python-build-standalone):
+    - allow-dyld-environment-variables: PYTHONHOME / PYTHONPATH / DYLD_* set by the launcher
+    - allow-unsigned-executable-memory : CPython JIT / ctypes shims used by markitdown deps
+
+  Per PRD §3.1 F6 and ADR-004: NO additional entitlements are permitted.
+  Any addition must go through PRD revision + Architect ADR amendment.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+</dict>
+</plist>

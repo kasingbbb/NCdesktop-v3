@@ -1,0 +1,72 @@
+# =============================================================================
+# Lockfile for task_002 (T-B): markitdown extras pin + transitive deps
+#
+# 上下文:
+#   - ADR-002: markitdown[pdf,docx,pptx,xlsx]==0.1.5 + beautifulsoup4 + ebooklib
+#   - 安装命令: pip install --no-cache-dir --no-deps -r requirements.lock
+#     因此必须显式列出全部传递依赖，否则 import 会失败（PRD 已证根因）。
+#
+# 顶层版本（AC-1 字面要求；prepare-embedded-markitdown-runtime.sh 同步常量）:
+#   - markitdown[pdf,docx,pptx,xlsx]==0.1.5
+#   - beautifulsoup4==4.12.3
+#   - ebooklib==0.18
+#
+# 7 个关键 import 模块（PRD §3.1-F1/F2 / runtime-manifest.imports）:
+#   ebooklib, bs4, pdfminer, pptx, mammoth, openpyxl, PIL
+#   注: markitdown 0.1.5 docx 转换走 mammoth（已通过 markitdown[docx] extras 传递），
+#       2026-05-13 E-1/E-2 裁决：runtime self-check 直接 import mammoth，不再依赖
+#       python-docx；python-docx 已从本 lock 移除（不在 markitdown[docx] extras 内
+#       的独立顶层 pin）。lxml/typing-extensions 仍被 ebooklib/python-pptx 共用，保留。
+#
+# 重新生成方法:
+#   python3.12 -m venv /tmp/lockenv && source /tmp/lockenv/bin/activate
+#   pip install --upgrade pip
+#   pip install "markitdown[pdf,docx,pptx,xlsx]==0.1.5" \
+#               "beautifulsoup4==4.12.3" "ebooklib==0.18"
+#   pip freeze > scripts/requirements.lock.raw
+#   # 再补回本文件顶部三条 extras 形式（pip freeze 会展平成 markitdown==0.1.5）
+#
+# 平台: aarch64-apple-darwin（与嵌入 PBS 3.12.7+20241016 匹配）
+# 生成于: 2026-05-13
+# =============================================================================
+
+# ---- 顶层 pin（AC-1 字面，必须保留 extras 标记） ----------------------------
+markitdown[pdf,docx,pptx,xlsx]==0.1.5
+beautifulsoup4==4.12.3
+ebooklib==0.18
+
+# ---- 传递依赖（pip install --no-deps 必须补齐） ----------------------------
+certifi==2026.4.22
+cffi==2.0.0
+charset-normalizer==3.4.7
+click==8.3.3
+cobble==0.1.4
+cryptography==48.0.0
+defusedxml==0.7.1
+et_xmlfile==2.0.0
+flatbuffers==25.12.19
+idna==3.15
+lxml==6.1.0
+magika==0.6.3
+mammoth==1.11.0
+markdownify==1.2.2
+numpy==2.4.4
+onnxruntime==1.26.0
+openpyxl==3.1.5
+packaging==26.2
+pandas==3.0.3
+pdfminer.six==20251230
+pdfplumber==0.11.9
+pillow==12.2.0
+protobuf==7.34.1
+pycparser==3.0
+pypdfium2==5.8.0
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.2
+python-pptx==1.0.2
+requests==2.34.0
+six==1.17.0
+soupsieve==2.8.3
+typing_extensions==4.15.0
+urllib3==2.7.0
+xlsxwriter==3.2.9
