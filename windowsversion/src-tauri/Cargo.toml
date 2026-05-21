@@ -1,0 +1,61 @@
+[package]
+name = "notecapt"
+version = "0.1.0"
+description = "NoteCapt Desktop — 多模态知识采集终端的桌面控制中枢"
+authors = ["钟嘉澄"]
+license = "MIT"
+repository = ""
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+rusqlite = { version = "0.34", features = ["bundled"] }
+dirs-next = "2"
+notify = "8"
+walkdir = "2"
+symphonia = { version = "0.5", features = ["mp3", "aac", "isomp4", "wav", "pcm"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+futures-util = "0.3"
+tauri = { version = "2", features = [] }
+tauri-plugin-log = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-drag = "2"
+tokio = { version = "1.50.0", features = ["time"] }
+tokio-util = { version = "0.7", features = ["io"] }
+hmac = "0.12"
+sha1 = "0.10"
+sha2 = "0.10"
+base64 = "0.22"
+quick-xml = "0.37"
+zip = "2"
+pdf-extract = "0.7"
+# task_009：扫描型 PDF 结构性嗅探（XObject + Font 引用判定，禁止启发式 / H6）。
+# 纯 Rust，无 C 依赖；与 pdf-extract 间接传递依赖同版本，避免重复编译。
+lopdf = "0.34"
+# task_H2_mime_sniff_fix：扩展名缺失/不匹配时，按 magic bytes 嗅探 MIME 类型。
+# 纯 Rust，无 C 依赖；仅读文件前 ~256 字节，性能可忽略。
+# 版本对齐 tauri 间接依赖（infer 0.19），避免重复编译。
+infer = "0.19"
+# custom_prompt_v1 / task_002：`utils::nfc` 模块依赖 UAX#15 NFC 归一化。
+# 仅在挂接既有孤儿模块（`startup` → `utils::nfc`）时需要；版本对齐 Cargo.lock 中
+# 由 idna 等间接拉入的同版本，避免重复编译。
+unicode-normalization = "0.1"
+
+[dev-dependencies]
+env_logger = "0.11"
+tempfile = "3"
+
+[target.'cfg(windows)'.dependencies]
+# Windows 平台依赖占位。未来若需 WinRT API（windows crate），在此添加。
