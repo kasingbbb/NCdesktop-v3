@@ -169,6 +169,9 @@ impl LLMClient {
         vec![
             ("x-api-key".to_string(), self.api_key.clone()),
             ("anthropic-version".to_string(), "2023-06-01".to_string()),
+            // 启用 prompt caching（已 GA，但加 beta 头对兼容旧 endpoint 也无副作用；
+            // 非 Anthropic 下游网关会忽略该头）
+            ("anthropic-beta".to_string(), "prompt-caching-2024-07-31".to_string()),
             ("Accept".to_string(), "application/json".to_string()),
         ]
     }
