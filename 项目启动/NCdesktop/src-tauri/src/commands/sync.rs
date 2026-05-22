@@ -71,6 +71,7 @@ pub async fn import_sessions(
 
     let mut project_ids = Vec::new();
     let total = session_ids.len() as u32;
+    let mut session_failures: Vec<(String, String)> = Vec::new();
 
     for (idx, session_id) in session_ids.iter().enumerate() {
         if state::is_session_synced(&sync_state, session_id, &manifest.device_id) {
@@ -89,137 +90,246 @@ pub async fn import_sessions(
             continue;
         }
 
-        let session = session_parser::parse_session(&session_dir, session_id)?;
-
-        let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
-
-        let now = chrono::Utc::now().to_rfc3339();
-        let project = crate::models::Project {
-            id: uuid::Uuid::new_v4().to_string(),
-            library_id: library_id.clone(),
-            name: session.title.clone(),
-            description: format!("从 TF 卡 {} 导入", manifest.device_name),
-            cover_asset_id: None,
-            source_type: "tf_card".to_string(),
-            source_data: Some(serde_json::json!({
-                "deviceId": manifest.device_id,
-                "sessionId": session_id,
-            }).to_string()),
-            is_pinned: false,
-            is_archived: false,
-            created_at: now.clone(),
-            updated_at: now.clone(),
-            total_duration: None,
-            asset_count: 0,
-            word_count: 0,
-            imported_at: Some(now),
-        };
-        db::project::insert(&conn, &project)?;
-
-        progress::emit_progress(
-            &app, session_id, "copying", idx as u32, total,
-            &format!("复制文件..."),
+        // 修复（review §一.5）：
+        // 1. 单 session 内的 project/asset/analysis/timeline/project-count 全部
+        //    包进一个 SQLite 事务，任一失败整 session 回滚，DB 不留半成品行。
+        // 2. timeline_builder 错误从原本的 `let _ =` 静默吞改成 propagate 进事务，
+        //    时间轴建不出来就 rollback，避免"前端看 import 完成但时间轴是空的"。
+        // 3. 每完成一个 session 立即写 sync_state 到磁盘，而不是循环结束才统一写。
+        //    旧实现下，第 5 个 session 失败时前 4 个已 commit 到 DB 但 sync_state
+        //    永远不会被保存 —— 下次扫描会重复导入这 4 个 session。
+        // 4. 单 session 失败不再中断整批导入；记录到 session_failures 在末尾报回。
+        let session_result = import_single_session(
+            &database,
+            &app,
+            &storage_dir,
+            &library_id,
+            &manifest,
+            session_id,
+            &session_dir,
+            idx as u32,
+            total,
         );
 
-        if let Some(ref audio_path) = session.audio_file_path {
-            let _ = file_copier::copy_file(
-                Path::new(audio_path), &storage_dir, session_id, "audio",
-            );
-        }
+        match session_result {
+            Ok(project_id) => {
+                state::mark_synced(&mut sync_state, session_id, &manifest.device_id, &project_id);
+                // 立刻持久化 sync_state（每 session 一次），防止后续 session 失败时
+                // 之前已成功的导入因为"sync_state 没存"而被下次扫描重复处理。
+                if let Err(e) = state::save_state(&state_path, &sync_state) {
+                    log::error!(
+                        "sync_state 持久化失败（session {} 已 DB 落盘但 state 未保存）: {}",
+                        session_id,
+                        e
+                    );
+                }
+                project_ids.push(project_id);
 
-        let mut local_asset_ids: Vec<(String, String)> = Vec::new();
-
-        let all_assets: Vec<&session_parser::SessionAssetMeta> = session.photos.iter()
-            .chain(session.scans.iter())
-            .collect();
-
-        for (asset_idx, asset_meta) in all_assets.iter().enumerate() {
-            let dest = file_copier::copy_file(
-                Path::new(&asset_meta.file_path),
-                &storage_dir,
-                session_id,
-                if session.photos.contains(asset_meta) { "photos" } else { "scans" },
-            );
-
-            let local_path = dest
-                .as_ref()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|_| asset_meta.file_path.clone());
-
-            let asset_type = if session.photos.iter().any(|p| p.file_name == asset_meta.file_name) {
-                "photo"
-            } else {
-                "scan_text"
-            };
-
-            let asset = crate::models::Asset {
-                id: uuid::Uuid::new_v4().to_string(),
-                project_id: project.id.clone(),
-                asset_type: asset_type.to_string(),
-                name: asset_meta.file_name.clone(),
-                original_name: asset_meta.file_name.clone(),
-                file_path: local_path,
-                file_size: std::fs::metadata(&asset_meta.file_path).map(|m| m.len() as i64).unwrap_or(0),
-                mime_type: guess_mime(Path::new(&asset_meta.file_path)),
-                captured_at: asset_meta.captured_at.clone(),
-                imported_at: chrono::Utc::now().to_rfc3339(),
-                source_type: "tf_card_camera".to_string(),
-                source_data: None,
-                is_starred: false,
-                ..Default::default()
-            };
-            db::asset::insert(&conn, &asset)?;
-
-            if let Some(meta) = meta_parser::try_parse_meta(&asset_meta.meta_path) {
-                let analysis = crate::models::AIAnalysisRow {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    asset_id: asset.id.clone(),
-                    summary: meta.summary.unwrap_or_default(),
-                    topics: serde_json::to_string(&meta.topics.unwrap_or_default()).unwrap_or_default(),
-                    ocr_text: meta.ocr_text,
-                    language: meta.language.unwrap_or_default(),
-                    suggested_tags: serde_json::to_string(&meta.suggested_tags.unwrap_or_default()).unwrap_or_default(),
-                    suggested_name: meta.suggested_name.unwrap_or_default(),
-                };
-                db::asset::upsert_analysis(&conn, &analysis)?;
-            }
-
-            local_asset_ids.push((asset_meta.file_name.clone(), asset.id.clone()));
-
-            if asset_idx % 5 == 0 {
                 progress::emit_progress(
-                    &app, session_id, "building", asset_idx as u32, all_assets.len() as u32,
-                    &format!("处理素材 {}/{}...", asset_idx + 1, all_assets.len()),
+                    &app, session_id, "done", idx as u32 + 1, total,
+                    &format!("会话 {session_id} 导入完成"),
+                );
+            }
+            Err(e) => {
+                log::error!("会话 {} 导入失败，已回滚该 session 的 DB 写入: {}", session_id, e);
+                session_failures.push((session_id.clone(), e.clone()));
+                progress::emit_progress(
+                    &app, session_id, "error", idx as u32 + 1, total,
+                    &format!("会话 {session_id} 导入失败: {e}"),
                 );
             }
         }
-
-        progress::emit_progress(
-            &app, session_id, "building", total, total,
-            "构建时间轴...",
-        );
-
-        let _ = timeline_builder::build_from_session(
-            &conn, &project.id, &session, &local_asset_ids,
-        );
-
-        let asset_count = local_asset_ids.len() as i64;
-        conn.execute(
-            "UPDATE projects SET asset_count = ?2, updated_at = ?3 WHERE id = ?1",
-            rusqlite::params![project.id, asset_count, chrono::Utc::now().to_rfc3339()],
-        ).map_err(|e| format!("更新项目统计失败: {e}"))?;
-
-        state::mark_synced(&mut sync_state, session_id, &manifest.device_id, &project.id);
-        project_ids.push(project.id);
-
-        progress::emit_progress(
-            &app, session_id, "done", idx as u32 + 1, total,
-            &format!("会话 {session_id} 导入完成"),
-        );
     }
 
-    state::save_state(&state_path, &sync_state)?;
+    // 最后再保存一次，兜底（即便每个 session 已经写过，重复写无害）。
+    if let Err(e) = state::save_state(&state_path, &sync_state) {
+        log::error!("sync_state 末尾持久化失败: {}", e);
+    }
+
+    if !session_failures.is_empty() {
+        let summary = session_failures
+            .iter()
+            .map(|(sid, err)| format!("- {sid}: {err}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        log::warn!(
+            "import_sessions：{}/{} 个会话失败：\n{}",
+            session_failures.len(),
+            total,
+            summary
+        );
+    }
     Ok(project_ids)
+}
+
+/// 单个 session 的 DB 写入流程（事务包裹）。
+///
+/// 成功：返回 project_id；失败：返回 Err，调用方负责日志/进度事件。
+/// 物理 fs::copy 仍在事务**之外**先做（保留原语义：拷贝失败时回退源路径），
+/// 但 DB 行的 project/asset/analysis/timeline/asset_count 都在单事务内原子写入。
+#[allow(clippy::too_many_arguments)]
+fn import_single_session(
+    database: &State<'_, Database>,
+    app: &AppHandle,
+    storage_dir: &Path,
+    library_id: &str,
+    manifest: &manifest::TFCardManifest,
+    session_id: &str,
+    session_dir: &Path,
+    idx: u32,
+    total: u32,
+) -> Result<String, String> {
+    let session = session_parser::parse_session(session_dir, session_id)?;
+
+    progress::emit_progress(
+        app, session_id, "copying", idx, total,
+        "复制文件...",
+    );
+
+    // —— fs::copy 阶段（事务之外）—— //
+    if let Some(ref audio_path) = session.audio_file_path {
+        if let Err(e) = file_copier::copy_file(
+            Path::new(audio_path), storage_dir, session_id, "audio",
+        ) {
+            log::warn!("会话 {} 音频拷贝失败（保留 manifest 路径）: {}", session_id, e);
+        }
+    }
+
+    let all_assets: Vec<&session_parser::SessionAssetMeta> = session
+        .photos
+        .iter()
+        .chain(session.scans.iter())
+        .collect();
+
+    // 预拷贝 + 预构造内存表，事务里只做 DB 写
+    let mut prepared: Vec<(crate::models::Asset, Option<crate::models::AIAnalysisRow>)> =
+        Vec::with_capacity(all_assets.len());
+    let mut local_asset_ids: Vec<(String, String)> = Vec::new();
+    let project_id = uuid::Uuid::new_v4().to_string();
+
+    for (asset_idx, asset_meta) in all_assets.iter().enumerate() {
+        let dest = file_copier::copy_file(
+            Path::new(&asset_meta.file_path),
+            storage_dir,
+            session_id,
+            if session.photos.contains(asset_meta) { "photos" } else { "scans" },
+        );
+
+        let local_path = dest
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| asset_meta.file_path.clone());
+
+        let asset_type = if session.photos.iter().any(|p| p.file_name == asset_meta.file_name) {
+            "photo"
+        } else {
+            "scan_text"
+        };
+
+        let asset = crate::models::Asset {
+            id: uuid::Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            asset_type: asset_type.to_string(),
+            name: asset_meta.file_name.clone(),
+            original_name: asset_meta.file_name.clone(),
+            file_path: local_path,
+            file_size: std::fs::metadata(&asset_meta.file_path).map(|m| m.len() as i64).unwrap_or(0),
+            mime_type: guess_mime(Path::new(&asset_meta.file_path)),
+            captured_at: asset_meta.captured_at.clone(),
+            imported_at: chrono::Utc::now().to_rfc3339(),
+            source_type: "tf_card_camera".to_string(),
+            source_data: None,
+            is_starred: false,
+            ..Default::default()
+        };
+
+        local_asset_ids.push((asset_meta.file_name.clone(), asset.id.clone()));
+
+        let analysis = meta_parser::try_parse_meta(&asset_meta.meta_path).map(|meta| {
+            crate::models::AIAnalysisRow {
+                id: uuid::Uuid::new_v4().to_string(),
+                asset_id: asset.id.clone(),
+                summary: meta.summary.unwrap_or_default(),
+                topics: serde_json::to_string(&meta.topics.unwrap_or_default()).unwrap_or_default(),
+                ocr_text: meta.ocr_text,
+                language: meta.language.unwrap_or_default(),
+                suggested_tags: serde_json::to_string(&meta.suggested_tags.unwrap_or_default()).unwrap_or_default(),
+                suggested_name: meta.suggested_name.unwrap_or_default(),
+            }
+        });
+
+        prepared.push((asset, analysis));
+
+        if asset_idx % 5 == 0 {
+            progress::emit_progress(
+                app, session_id, "building", asset_idx as u32, all_assets.len() as u32,
+                &format!("处理素材 {}/{}...", asset_idx + 1, all_assets.len()),
+            );
+        }
+    }
+
+    progress::emit_progress(
+        app, session_id, "building", total, total,
+        "构建时间轴...",
+    );
+
+    // —— DB 事务阶段 —— //
+    let now = chrono::Utc::now().to_rfc3339();
+    let project = crate::models::Project {
+        id: project_id.clone(),
+        library_id: library_id.to_string(),
+        name: session.title.clone(),
+        description: format!("从 TF 卡 {} 导入", manifest.device_name),
+        cover_asset_id: None,
+        source_type: "tf_card".to_string(),
+        source_data: Some(
+            serde_json::json!({
+                "deviceId": manifest.device_id,
+                "sessionId": session_id,
+            })
+            .to_string(),
+        ),
+        is_pinned: false,
+        is_archived: false,
+        created_at: now.clone(),
+        updated_at: now.clone(),
+        total_duration: None,
+        asset_count: prepared.len() as i64,
+        word_count: 0,
+        imported_at: Some(now.clone()),
+    };
+
+    let mut conn = database
+        .conn
+        .lock()
+        .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("开启事务失败: {e}"))?;
+
+    db::project::insert(&tx, &project)?;
+
+    for (asset, analysis_opt) in &prepared {
+        db::asset::insert(&tx, asset)?;
+        if let Some(analysis) = analysis_opt {
+            db::asset::upsert_analysis(&tx, analysis)?;
+        }
+    }
+
+    // timeline_builder 错误现在 propagate，让 session 整体 rollback；
+    // 旧实现 `let _ =` 会让"asset 落盘但时间轴是空的"成为不一致状态。
+    timeline_builder::build_from_session(&tx, &project.id, &session, &local_asset_ids)
+        .map_err(|e| format!("构建时间轴失败: {e}"))?;
+
+    tx.execute(
+        "UPDATE projects SET asset_count = ?2, updated_at = ?3 WHERE id = ?1",
+        rusqlite::params![project.id, prepared.len() as i64, chrono::Utc::now().to_rfc3339()],
+    )
+    .map_err(|e| format!("更新项目统计失败: {e}"))?;
+
+    tx.commit().map_err(|e| format!("提交事务失败: {e}"))?;
+
+    Ok(project_id)
 }
 
 #[tauri::command]

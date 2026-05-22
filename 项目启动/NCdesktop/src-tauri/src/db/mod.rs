@@ -46,8 +46,17 @@ impl Database {
         let conn = Connection::open(db_path)
             .map_err(|e| format!("打开数据库失败: {e}"))?;
 
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
-            .map_err(|e| format!("数据库 PRAGMA 设置失败: {e}"))?;
+        // PRAGMA 配置：
+        // - journal_mode=WAL：允许读写并发；前置依赖（虽然当前是单连接 Mutex 模型暂未受益）。
+        // - foreign_keys=ON：保留 schema 级别的引用完整性。
+        // - busy_timeout=5000：SQLite 遇到锁冲突时等待最长 5s 而非立即 SQLITE_BUSY。
+        //   单 `Mutex<Connection>` 模型下原本不会触发 SQLITE_BUSY，但未来切池后这条
+        //   是并发写正确的前提；现在加上零代价。
+        // - synchronous=NORMAL：WAL 模式下安全的 fsync 节奏；显著提升写入吞吐。
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;\n             PRAGMA foreign_keys=ON;\n             PRAGMA busy_timeout=5000;\n             PRAGMA synchronous=NORMAL;",
+        )
+        .map_err(|e| format!("数据库 PRAGMA 设置失败: {e}"))?;
 
         migration::run_migrations(&conn)?;
 

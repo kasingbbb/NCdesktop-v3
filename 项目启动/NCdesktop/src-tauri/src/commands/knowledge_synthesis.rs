@@ -10,8 +10,7 @@
 
 use crate::db::knowledge::get_concepts_with_stats;
 use crate::db::knowledge_units::{
-    delete_knowledge_unit, get_knowledge_units_summary, insert_knowledge_unit, CreateKnowledgeUnit,
-    KnowledgeUnitSummary,
+    get_knowledge_units_summary, insert_knowledge_unit, CreateKnowledgeUnit, KnowledgeUnitSummary,
 };
 use crate::db::Database;
 use crate::llm::chat::{chat_completion, ChatMessage};
@@ -84,16 +83,42 @@ pub async fn synthesize_knowledge_units(
         return Ok(vec![]);
     }
 
-    // 2. 如果 force，先删除旧知识单元
-    if force {
+    // 2. 幂等性保护（修复：旧实现里 force=false 也会重复 insert KU，每点一次"合成"
+    //    都新建 10-15 个新 UUID 的 unit，library 列表/图谱/复习节奏迅速污染）：
+    //    - force=false：若 library 已有 KU，直接返回 existing，不再合成；
+    //    - force=true：在单事务里删除旧 KU，再继续合成新 KU。
+    if !force {
         let existing = {
             let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
             get_knowledge_units_summary(&conn, &library_id)?
         };
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
-        for unit in &existing {
-            let _ = delete_knowledge_unit(&conn, &unit.id);
+        if !existing.is_empty() {
+            let count = existing.len();
+            log::info!(
+                "synthesize_knowledge_units: library {} 已有 {} 个 KU，force=false 跳过合成",
+                library_id,
+                count
+            );
+            emit_synthesis(&app, &library_id, "completed", count, count, None);
+            return Ok(existing);
         }
+    } else {
+        // force=true：原子地清空所有 KU。
+        // 旧实现把 SELECT id + 多次 DELETE 拆成两次锁，中间存在 TOCTOU 窗口
+        // （另一并发 synthesize 可能插入新 KU 不被清掉，然后两次 insert 翻倍）；
+        // 这里改成单条 SQL 一把 DELETE，省锁也消除竞态。
+        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let deleted = conn
+            .execute(
+                "DELETE FROM knowledge_units WHERE library_id = ?1",
+                params![library_id],
+            )
+            .map_err(|e| format!("force 模式删除旧知识单元失败: {e}"))?;
+        log::info!(
+            "synthesize_knowledge_units: force=true 清空 library {} 旧 KU {} 条",
+            library_id,
+            deleted
+        );
     }
 
     // 3. 分批聚类：单次 prompt 过大时方舟网关会断连，按 CHUNK_SIZE 切块

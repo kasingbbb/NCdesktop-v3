@@ -770,11 +770,30 @@ pub fn import_files_core<S: EnqueueScheduler>(
         };
 
         // —— 短锁块：仅做 asset 行 INSERT；guard drop 后再 enqueue —— //
+        // 修复：insert 失败时清理已 copy 到 workspace 的孤儿文件
+        //（旧实现 fs::copy 已经把源文件复制到 dest_path，DB insert 失败后既无 asset 行
+        //  也无任何引用，目标目录会累积"UUID 前缀+原名"的幽灵文件，用户从 UI 看不到，
+        //  但持续占磁盘；UNIQUE 冲突 / 锁竞争场景下会规律性触发）。
         {
             let conn = conn_mutex
                 .lock()
                 .map_err(|e| format!("数据库锁获取失败: {e}"))?;
             if let Err(e) = db::asset::insert(&conn, &asset) {
+                drop(conn);
+                if let Err(re) = fs::remove_file(&dest_path) {
+                    log::error!(
+                        "dropzone insert 失败后清理 dest_path 也失败：{} — {} (原 insert 错误: {})",
+                        dest_path.display(),
+                        re,
+                        e
+                    );
+                } else {
+                    log::warn!(
+                        "dropzone insert 失败，已清理孤儿文件 {} — {}",
+                        dest_path.display(),
+                        e
+                    );
+                }
                 failures.push(format!("{path_str}: {e}"));
                 continue;
             }

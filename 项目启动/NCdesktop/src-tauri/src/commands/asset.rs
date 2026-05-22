@@ -455,7 +455,7 @@ pub fn move_asset_to_workspace_folder(
         ));
     }
 
-    let conn = database
+    let mut conn = database
         .conn
         .lock()
         .map_err(|e| format!("数据库锁获取失败: {e}"))?;
@@ -482,22 +482,61 @@ pub fn move_asset_to_workspace_folder(
         planned.push((asset.id.clone(), src, dest, new_name));
     }
 
+    // —— 阶段 1：rename 物理文件，失败时反向回滚已 rename 的项 —— //
+    // 修复：回滚 rename 失败原本是 `let _ = fs::rename(...)` 静默吞，现在改成
+    // log::error!，让用户的源文件残留在目标目录时能在日志里追踪。
     let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
     for (_id, src, dest, _name) in &planned {
         if let Err(e) = fs::rename(src, dest) {
-            for (orig, target) in moved.iter().rev() {
-                let _ = fs::rename(target, orig);
-            }
-            return Err(format!("移动失败 {:?} → {:?}: {e}", src, dest, e = e));
+            rollback_renames(&moved, &format!("rename 中途失败：{e}"));
+            return Err(format!("移动失败 {:?} → {:?}: {e}", src, dest));
         }
         moved.push((src.clone(), dest.clone()));
     }
 
-    for (id, _src, dest, new_name) in &planned {
-        let dest_str = dest.to_string_lossy().to_string();
-        db::asset::update_name_and_path(&conn, id, new_name, &dest_str)?;
+    // —— 阶段 2：DB 写入包进单个事务；任何一步失败都回滚事务 + 反向回滚 fs rename —— //
+    // 修复：旧实现里 `update_name_and_path` 在 SQLite 默认 autocommit 模式下逐行写，
+    // 中途失败（磁盘掉电 / UNIQUE 冲突）会留下 DB 与物理位置不一致——用户看到的现象
+    // 是"我的素材凭空消失了"。现在所有 DB 写要么全部 commit，要么全部不写并物理回滚。
+    let db_result = (|| -> Result<(), String> {
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("开启事务失败: {e}"))?;
+        for (id, _src, dest, new_name) in &planned {
+            let dest_str = dest.to_string_lossy().to_string();
+            db::asset::update_name_and_path(&tx, id, new_name, &dest_str)?;
+        }
+        tx.commit().map_err(|e| format!("提交事务失败: {e}"))?;
+        Ok(())
+    })();
+
+    if let Err(e) = db_result {
+        log::error!(
+            "move_asset_to_workspace_folder：DB 事务失败，回滚 {} 个已 rename 文件: {}",
+            moved.len(),
+            e
+        );
+        rollback_renames(&moved, &format!("DB 事务失败: {e}"));
+        return Err(format!("移动失败（DB 写入已回滚物理文件）: {e}"));
     }
+
     Ok(())
+}
+
+/// 反向回滚一组 (src → dest) rename。任何一步回滚失败 log::error。
+/// 此函数只在批量 fs 操作中途失败时被调用；成功路径不会触达。
+fn rollback_renames(moved: &[(PathBuf, PathBuf)], cause: &str) {
+    for (orig, target) in moved.iter().rev() {
+        if let Err(re) = fs::rename(target, orig) {
+            log::error!(
+                "rename 回滚失败 {:?} → {:?}: {} (触发原因: {})",
+                target,
+                orig,
+                re,
+                cause
+            );
+        }
+    }
 }
 
 #[tauri::command]
@@ -543,7 +582,7 @@ pub fn move_assets(
 ) -> Result<Vec<models::Asset>, String> {
     let target_dir = workspace::ensure_project_workspace(&target_project_id)?;
 
-    let conn = database
+    let mut conn = database
         .conn
         .lock()
         .map_err(|e| format!("数据库锁获取失败: {e}"))?;
@@ -551,52 +590,73 @@ pub fn move_assets(
     db::project::get_by_id(&conn, &target_project_id)?
         .ok_or_else(|| format!("目标项目不存在: {target_project_id}"))?;
 
-    // Plan: (asset_id, already_in_target, src, dest)
-    let mut planned: Vec<(String, bool, PathBuf, PathBuf)> = Vec::new();
+    // Plan: (asset_id, already_in_target, src, dest, src_existed_at_plan_time)
+    // 修复：旧实现 `if src.exists()` 跳过物理 rename，但 DB 仍然 update 成新路径，
+    // 导致"源文件已丢失"时 DB 指向**不存在的目标路径**。现在记录"plan 时 src 是否存在"，
+    // DB 写入只对真正发生 rename 的项进行。
+    let mut planned: Vec<(String, bool, PathBuf, PathBuf, bool)> = Vec::new();
     for id in &asset_ids {
         let asset = db::asset::get_by_id(&conn, id)?
             .ok_or_else(|| format!("素材不存在: {id}"))?;
         if asset.project_id == target_project_id {
-            planned.push((asset.id, true, PathBuf::new(), PathBuf::new()));
+            planned.push((asset.id, true, PathBuf::new(), PathBuf::new(), false));
             continue;
         }
         let src = PathBuf::from(&asset.file_path);
+        let src_existed = src.exists();
         let file_name = src
             .file_name()
             .and_then(|s| s.to_str())
             .ok_or_else(|| format!("非法文件名: {}", asset.file_path))?
             .to_string();
         let dest = unique_path(&target_dir, &file_name);
-        planned.push((asset.id, false, src, dest));
+        planned.push((asset.id, false, src, dest, src_existed));
     }
 
+    // —— 阶段 1：rename 物理文件 —— //
     let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
-    for (_id, skip, src, dest) in &planned {
-        if *skip {
+    for (_id, skip, src, dest, src_existed) in &planned {
+        if *skip || !*src_existed {
             continue;
         }
-        if src.exists() {
-            if let Err(e) = fs::rename(src, dest) {
-                for (orig, target) in moved.iter().rev() {
-                    let _ = fs::rename(target, orig);
-                }
-                return Err(format!("移动失败 {:?} → {:?}: {e}", src, dest));
-            }
-            moved.push((src.clone(), dest.clone()));
+        if let Err(e) = fs::rename(src, dest) {
+            rollback_renames(&moved, &format!("rename 中途失败：{e}"));
+            return Err(format!("移动失败 {:?} → {:?}: {e}", src, dest));
         }
+        moved.push((src.clone(), dest.clone()));
     }
 
-    let mut result: Vec<models::Asset> = Vec::with_capacity(planned.len());
-    for (id, skip, _src, dest) in &planned {
-        if !*skip {
-            let dest_str = dest.to_string_lossy().to_string();
-            db::asset::update_project_and_path(&conn, id, &target_project_id, &dest_str)?;
+    // —— 阶段 2：DB 写入包进事务；失败回滚事务 + 反向回滚 fs rename —— //
+    let db_result = (|| -> Result<Vec<models::Asset>, String> {
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("开启事务失败: {e}"))?;
+        let mut result: Vec<models::Asset> = Vec::with_capacity(planned.len());
+        for (id, skip, _src, dest, src_existed) in &planned {
+            if !*skip && *src_existed {
+                let dest_str = dest.to_string_lossy().to_string();
+                db::asset::update_project_and_path(&tx, id, &target_project_id, &dest_str)?;
+            }
+            let updated = db::asset::get_by_id(&tx, id)?
+                .ok_or_else(|| format!("移动后读取素材失败: {id}"))?;
+            result.push(updated);
         }
-        let updated = db::asset::get_by_id(&conn, id)?
-            .ok_or_else(|| format!("移动后读取素材失败: {id}"))?;
-        result.push(updated);
+        tx.commit().map_err(|e| format!("提交事务失败: {e}"))?;
+        Ok(result)
+    })();
+
+    match db_result {
+        Ok(result) => Ok(result),
+        Err(e) => {
+            log::error!(
+                "move_assets：DB 事务失败，回滚 {} 个已 rename 文件: {}",
+                moved.len(),
+                e
+            );
+            rollback_renames(&moved, &format!("DB 事务失败: {e}"));
+            Err(format!("移动失败（DB 写入已回滚物理文件）: {e}"))
+        }
     }
-    Ok(result)
 }
 
 /// 跨项目复制素材（BatchToolbar"复制到"路径）。
@@ -614,7 +674,7 @@ pub fn copy_assets(
 ) -> Result<Vec<models::Asset>, String> {
     let target_dir = workspace::ensure_project_workspace(&target_project_id)?;
 
-    let conn = database
+    let mut conn = database
         .conn
         .lock()
         .map_err(|e| format!("数据库锁获取失败: {e}"))?;
@@ -637,42 +697,77 @@ pub fn copy_assets(
         planned.push((asset, src, dest));
     }
 
+    // —— 阶段 1：copy 物理文件，失败时清理已 copy —— //
     let mut copied: Vec<PathBuf> = Vec::new();
     for (_asset, src, dest) in &planned {
         if src.exists() {
             if let Err(e) = fs::copy(src, dest) {
-                for d in copied.iter().rev() {
-                    let _ = fs::remove_file(d);
-                }
+                rollback_copies(&copied, &format!("copy 中途失败：{e}"));
                 return Err(format!("复制失败 {:?} → {:?}: {e}", src, dest));
             }
             copied.push(dest.clone());
         }
     }
 
-    let mut result: Vec<models::Asset> = Vec::with_capacity(planned.len());
-    for (orig, _src, dest) in planned.into_iter() {
-        let new_asset = models::Asset {
-            id: uuid::Uuid::new_v4().to_string(),
-            project_id: target_project_id.clone(),
-            asset_type: orig.asset_type,
-            name: orig.name,
-            original_name: orig.original_name,
-            file_path: dest.to_string_lossy().to_string(),
-            file_size: orig.file_size,
-            mime_type: orig.mime_type,
-            captured_at: orig.captured_at,
-            imported_at: now.clone(),
-            source_type: orig.source_type,
-            source_data: orig.source_data,
-            is_starred: false,
-            source_asset_id: None,
-            derivative_version: 0,
-        };
-        db::asset::insert(&conn, &new_asset)?;
-        result.push(new_asset);
+    // —— 阶段 2：DB INSERT 包进事务；失败回滚事务 + 清理已 copy 的目标文件 —— //
+    // 修复：旧实现 db::asset::insert 在 autocommit 模式下逐行写，第 N+1 行失败时
+    // 已经插入的 N 行留在 DB、对应的 N+1...M 物理文件留在磁盘但无 DB 行 → 孤儿文件累积。
+    let db_result = (|| -> Result<Vec<models::Asset>, String> {
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("开启事务失败: {e}"))?;
+        let mut result: Vec<models::Asset> = Vec::with_capacity(planned.len());
+        for (orig, _src, dest) in planned.iter() {
+            let new_asset = models::Asset {
+                id: uuid::Uuid::new_v4().to_string(),
+                project_id: target_project_id.clone(),
+                asset_type: orig.asset_type.clone(),
+                name: orig.name.clone(),
+                original_name: orig.original_name.clone(),
+                file_path: dest.to_string_lossy().to_string(),
+                file_size: orig.file_size,
+                mime_type: orig.mime_type.clone(),
+                captured_at: orig.captured_at.clone(),
+                imported_at: now.clone(),
+                source_type: orig.source_type.clone(),
+                source_data: orig.source_data.clone(),
+                is_starred: false,
+                source_asset_id: None,
+                derivative_version: 0,
+            };
+            db::asset::insert(&tx, &new_asset)?;
+            result.push(new_asset);
+        }
+        tx.commit().map_err(|e| format!("提交事务失败: {e}"))?;
+        Ok(result)
+    })();
+
+    match db_result {
+        Ok(result) => Ok(result),
+        Err(e) => {
+            log::error!(
+                "copy_assets：DB 事务失败，清理 {} 个已 copy 文件: {}",
+                copied.len(),
+                e
+            );
+            rollback_copies(&copied, &format!("DB 事务失败: {e}"));
+            Err(format!("复制失败（DB 写入已清理物理文件）: {e}"))
+        }
     }
-    Ok(result)
+}
+
+/// 反向清理一组 copy 出来的目标文件。
+fn rollback_copies(copied: &[PathBuf], cause: &str) {
+    for d in copied.iter().rev() {
+        if let Err(re) = fs::remove_file(d) {
+            log::error!(
+                "copy 清理失败 {:?}: {} (触发原因: {})",
+                d,
+                re,
+                cause
+            );
+        }
+    }
 }
 
 #[cfg(test)]
