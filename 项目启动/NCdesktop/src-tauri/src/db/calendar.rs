@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn insert_and_query_events() {
         let db = open_test_db();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
         let lib = "lib-test";
 
         let evs = vec![
@@ -273,7 +273,7 @@ mod tests {
     #[test]
     fn insert_deduplicates_same_uid_starttime() {
         let db = open_test_db();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
         let lib = "lib-dedup";
 
         let evs = vec![make_event("uid-dup", "HIST 150", "2099-10-07T09:00:00+00:00")];
@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn time_range_filter_works() {
         let db = open_test_db();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
         let lib = "lib-range";
 
         let evs = vec![
@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn delete_by_source_removes_correct_events() {
         let db = open_test_db();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
         let lib = "lib-del";
 
         let file_evs = vec![make_event("uid-f1", "ECON 101", "2099-10-07T09:00:00+00:00")];
@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn get_event_by_id_works() {
         let db = open_test_db();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
         let lib = "lib-byid";
 
         let evs = vec![make_event("uid-x", "PHIL 220", "2099-10-09T11:00:00+00:00")];

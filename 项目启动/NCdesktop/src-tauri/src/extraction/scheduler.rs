@@ -34,7 +34,7 @@ impl PipelineScheduler {
     /// 单个素材入队
     pub fn enqueue(app: &AppHandle, asset_id: &str) -> Result<String, String> {
         let db = app.state::<Database>();
-        let conn = db.conn.lock().map_err(|e| format!("DB 锁失败: {e}"))?;
+        let conn = db.conn()?;
 
         let task_id = Uuid::new_v4().to_string();
         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
@@ -488,7 +488,7 @@ impl PipelineScheduler {
     /// 启动恢复：重置 running 状态的任务为 queued
     pub fn recover(app: &AppHandle) -> Result<u64, String> {
         let db = app.state::<Database>();
-        let conn = db.conn.lock().map_err(|e| format!("DB 锁失败: {e}"))?;
+        let conn = db.conn()?;
         db_ext::reset_running_tasks(&conn)
     }
 }
@@ -497,7 +497,7 @@ impl PipelineScheduler {
 
 fn db_get_next_task(app: &AppHandle) -> Result<Option<db_ext::PipelineTaskRow>, String> {
     let db = app.state::<Database>();
-    let conn = db.conn.lock().map_err(|e| format!("DB 锁失败（取任务）: {e}"))?;
+    let conn = db.conn()?;
     Ok(db_ext::get_queued_tasks(&conn, 1)
         .unwrap_or_default()
         .into_iter()
@@ -506,7 +506,7 @@ fn db_get_next_task(app: &AppHandle) -> Result<Option<db_ext::PipelineTaskRow>, 
 
 fn db_has_queued_tasks(app: &AppHandle) -> Result<bool, String> {
     let db = app.state::<Database>();
-    let conn = db.conn.lock().map_err(|e| format!("DB 锁失败（统计）: {e}"))?;
+    let conn = db.conn()?;
     let stats = db_ext::get_pipeline_stats(&conn).unwrap_or_else(|_| db_ext::PipelineStats {
         queued: 0, running: 0, completed: 0, failed: 0, cancelled: 0,
     });
@@ -515,7 +515,7 @@ fn db_has_queued_tasks(app: &AppHandle) -> Result<bool, String> {
 
 fn db_mark_task_running(app: &AppHandle, task_id: &str, asset_id: &str) {
     let db = app.state::<Database>();
-    if let Ok(conn) = db.conn.lock() {
+    if let Ok(conn) = db.conn() {
         let _ = db_ext::update_task_status(&conn, task_id, "running", None);
         let _ = db_ext::update_extraction_status(&conn, asset_id, "extracting", None);
     };
@@ -524,7 +524,7 @@ fn db_mark_task_running(app: &AppHandle, task_id: &str, asset_id: &str) {
 fn db_get_asset(app: &AppHandle, asset_id: &str) -> Option<crate::models::Asset> {
     let db = app.state::<Database>();
     // 存入变量使临时值（Result<MutexGuard, _>）在此处析构，早于 db 析构
-    let result = match db.conn.lock() {
+    let result = match db.conn() {
         Ok(conn) => crate::db::asset::get_by_id(&conn, asset_id).unwrap_or(None),
         Err(e) => {
             log::error!("调度器：DB 锁失败（取素材）: {e}");
@@ -536,7 +536,7 @@ fn db_get_asset(app: &AppHandle, asset_id: &str) -> Option<crate::models::Asset>
 
 fn db_get_extract_options(app: &AppHandle) -> Result<ExtractOptions, String> {
     let db = app.state::<Database>();
-    let conn = db.conn.lock().map_err(|e| format!("DB 锁失败（读取提取配置）: {e}"))?;
+    let conn = db.conn()?;
 
     let markitdown_enabled = crate::db::settings::get(&conn, SETTING_MARKITDOWN_ENABLED)?
         .map(|v| {
@@ -664,7 +664,7 @@ fn update_conversion_meta_failure_code(
     code: Option<FailureCode>,
 ) {
     let db = app.state::<Database>();
-    let conn = match db.conn.lock() {
+    let conn = match db.conn() {
         Ok(c) => c,
         Err(e) => {
             log::warn!("更新 conversion_meta.failure_code：DB 锁失败: {e}");
@@ -680,7 +680,7 @@ fn update_conversion_meta_failure_code(
 
 fn db_mark_task_status(app: &AppHandle, task_id: &str, asset_id: &str, status: &str, reason: &str) {
     let db = app.state::<Database>();
-    if let Ok(conn) = db.conn.lock() {
+    if let Ok(conn) = db.conn() {
         let msg = if reason.is_empty() { None } else { Some(reason) };
         if status == "unsupported" {
             let _ = db_ext::update_task_status(&conn, task_id, "completed", None);
@@ -703,7 +703,7 @@ fn db_save_extraction_result(
     segments_json: Option<&str>,
 ) {
     let db = app.state::<Database>();
-    if let Ok(conn) = db.conn.lock() {
+    if let Ok(conn) = db.conn() {
         let _ = db_ext::update_extraction_result(
             &conn, asset_id, raw_text, structured_md,
             quality_level, extractor_type, segments_json,
@@ -723,7 +723,7 @@ fn db_handle_task_error(
     error_msg: &str,
 ) {
     let db = app.state::<Database>();
-    if let Ok(conn) = db.conn.lock() {
+    if let Ok(conn) = db.conn() {
         let _ = db_ext::update_task_status(&conn, task_id, "failed", Some(error_msg));
         if retry_count + 1 < max_retries {
             let _ = db_ext::update_task_status(&conn, task_id, "queued", Some(error_msg));
@@ -847,7 +847,7 @@ fn write_derivative_md(
     let file_size = final_content.len() as i64;
 
     let db = app.state::<Database>();
-    let conn = match db.conn.lock() {
+    let conn = match db.conn() {
         Ok(c) => c,
         Err(e) => {
             log::warn!("物化 MD：DB 锁失败: {e}");
@@ -1067,7 +1067,7 @@ fn write_placeholder_md(
     let file_size = final_content.len() as i64;
 
     let db = app.state::<Database>();
-    let conn = match db.conn.lock() {
+    let conn = match db.conn() {
         Ok(c) => c,
         Err(e) => {
             log::warn!("写 placeholder：DB 锁失败: {e}");
@@ -1336,7 +1336,7 @@ fn write_conversion_meta(
     };
 
     let db = app.state::<Database>();
-    let conn = match db.conn.lock() {
+    let conn = match db.conn() {
         Ok(c) => c,
         Err(e) => {
             log::warn!("写 conversion_meta：DB 锁失败: {e}");

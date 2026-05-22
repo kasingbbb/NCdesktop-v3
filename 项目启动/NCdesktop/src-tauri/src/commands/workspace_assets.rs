@@ -74,10 +74,7 @@ pub fn list_workspace_assets(
 ) -> Result<ListWorkspaceAssetsResponse, String> {
     let page = page_size.unwrap_or(DEFAULT_PAGE).clamp(1, MAX_PAGE);
 
-    let conn = database
-        .conn
-        .lock()
-        .map_err(|e| format!("DB 锁: {e}"))?;
+    let conn = database.conn()?;
 
     // 构造 SQL
     let mut sql = String::from(

@@ -105,7 +105,7 @@ pub fn knowledge_get_understanding_data(
     db: State<'_, Database>,
     concept_id: String,
 ) -> Result<UnderstandingData, String> {
-    let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = db.conn()?;
     let summary = get_summary(&conn, &concept_id)?;
     let explanation = get_explanation(&conn, &concept_id)?;
     let user_note = get_user_note(&conn, &concept_id)?;
@@ -131,7 +131,7 @@ pub async fn knowledge_generate_summary(
 ) -> Result<String, String> {
     // 缓存检查
     if !force_regenerate {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         if get_summary(&conn, &concept_id)?.is_some() {
             return Ok("cached".to_string());
         }
@@ -139,7 +139,7 @@ pub async fn knowledge_generate_summary(
 
     // 读取 LLM 客户端 + 概念信息
     let (client, concept_name, excerpts) = {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         let client = LLMClient::from_db_or_env(&conn)?;
         let detail = db_get_concept_detail(&conn, &concept_id)?
             .ok_or_else(|| format!("概念不存在: {concept_id}"))?;
@@ -197,7 +197,7 @@ pub async fn knowledge_generate_summary(
         generated_at: now,
     };
     {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         save_summary(&conn, &summary)?;
     }
 
@@ -218,7 +218,7 @@ pub async fn knowledge_generate_explanation(
 ) -> Result<String, String> {
     // 缓存检查
     if !force_regenerate {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         if get_explanation(&conn, &concept_id)?.is_some() {
             return Ok("cached".to_string());
         }
@@ -226,7 +226,7 @@ pub async fn knowledge_generate_explanation(
 
     // 读取 LLM 客户端 + 概念信息
     let (client, concept_name, definition, sections) = {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         let client = LLMClient::from_db_or_env(&conn)?;
         let detail = db_get_concept_detail(&conn, &concept_id)?
             .ok_or_else(|| format!("概念不存在: {concept_id}"))?;
@@ -338,7 +338,7 @@ pub async fn knowledge_generate_explanation(
     };
 
     {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         save_explanation(&conn, &explanation)?;
     }
 
@@ -359,7 +359,7 @@ pub async fn knowledge_validate_explanation(
 ) -> Result<String, String> {
     // 读取 LLM 客户端 + 概念信息
     let (client, concept_name, key_points) = {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         let client = LLMClient::from_db_or_env(&conn)?;
         let detail = db_get_concept_detail(&conn, &concept_id)?
             .ok_or_else(|| format!("概念不存在: {concept_id}"))?;
@@ -407,7 +407,7 @@ pub async fn knowledge_validate_explanation(
     // 存入数据库
     let now = chrono::Utc::now().to_rfc3339();
     {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         save_mirror_feedback(&conn, &concept_id, &result, &now)?;
     }
 
@@ -425,7 +425,7 @@ pub fn knowledge_save_user_note(
     concept_id: String,
     user_explanation: String,
 ) -> Result<(), String> {
-    let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = db.conn()?;
     let now = chrono::Utc::now().to_rfc3339();
     save_user_explanation(&conn, &concept_id, &user_explanation, &now)?;
     Ok(())
@@ -441,6 +441,6 @@ pub fn knowledge_get_relations(
     db: State<'_, Database>,
     concept_id: String,
 ) -> Result<Vec<ConceptRelation>, String> {
-    let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = db.conn()?;
     get_relations(&conn, &concept_id)
 }

@@ -411,9 +411,9 @@ fn collect_state_inputs(
     database: &Database,
     asset_ids: &[String],
 ) -> Result<Vec<AssetStateInput>, OutboundError> {
-    let conn = database.conn.lock().map_err(|e| OutboundError::IoFailed {
+    let conn = database.conn().map_err(|e| OutboundError::IoFailed {
         asset_id: None,
-        detail: format!("数据库锁获取失败: {e}"),
+        detail: e,
         message: "内部错误，请重试".to_string(),
     })?;
 

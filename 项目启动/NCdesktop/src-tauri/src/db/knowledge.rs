@@ -428,7 +428,7 @@ mod tests {
     #[test]
     fn insert_and_get_concept() {
         let db = open_db();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
         let c = make_concept("lib-1", "边际效用递减");
         insert_concept(&conn, &c).unwrap();
 
@@ -440,7 +440,7 @@ mod tests {
     #[test]
     fn get_concepts_with_stats_returns_counts() {
         let db = open_db();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
 
         let c = make_concept("lib-1", "供需均衡");
         insert_concept(&conn, &c).unwrap();
@@ -478,7 +478,7 @@ mod tests {
     #[test]
     fn update_concept_marks_user_edited() {
         let db = open_db();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
         let c = make_concept("lib-1", "认知偏差");
         insert_concept(&conn, &c).unwrap();
 
@@ -492,7 +492,7 @@ mod tests {
     #[test]
     fn delete_concept_cascades() {
         let db = open_db();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
         let c = make_concept("lib-1", "享乐适应");
         insert_concept(&conn, &c).unwrap();
 
@@ -525,7 +525,7 @@ mod tests {
     #[test]
     fn insert_ignore_duplicate_concept() {
         let db = open_db();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
         let c = make_concept("lib-1", "信息不对称");
         insert_concept(&conn, &c).unwrap();
         // 相同 id 再插入，不报错

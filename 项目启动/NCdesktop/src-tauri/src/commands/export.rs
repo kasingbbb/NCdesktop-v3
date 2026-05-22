@@ -28,10 +28,7 @@ pub async fn export_project_markdown(
     db: State<'_, Database>,
     options: ExportOptions,
 ) -> Result<ExportResult, String> {
-    let conn = db
-        .conn
-        .lock()
-        .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = db.conn()?;
 
     let project = db::project::get_by_id(&conn, &options.project_id)?
         .ok_or_else(|| "项目不存在".to_string())?;

@@ -70,7 +70,7 @@ pub fn get_prompt(
     kind: String,
 ) -> Result<PromptInfo, String> {
     validate_kind(&kind)?;
-    let conn = database.conn.lock().map_err(|e| format!("DB 锁: {e}"))?;
+    let conn = database.conn()?;
     let user_v = settings::get(&conn, &key(&kind, "user"))?;
     let out_v = settings::get(&conn, &key(&kind, "output"))?;
     let voff = settings::get(&conn, &key(&kind, "validated_offline"))?
@@ -135,7 +135,7 @@ pub fn save_prompt(
         placeholder_check(&kind, &text)?;
     }
 
-    let conn = database.conn.lock().map_err(|e| format!("DB 锁: {e}"))?;
+    let conn = database.conn()?;
     settings::set(&conn, &key(&kind, &field), &text)?;
     let ts = chrono::Utc::now().to_rfc3339();
     settings::set(&conn, &key(&kind, "updated_at"), &ts)?;
@@ -154,7 +154,7 @@ pub fn reset_prompt(
 ) -> Result<(), String> {
     ensure_writable(mode.inner())?;
     validate_kind(&kind)?;
-    let conn = database.conn.lock().map_err(|e| format!("DB 锁: {e}"))?;
+    let conn = database.conn()?;
     let fields_to_clear: Vec<&str> = if let Some(f) = field.as_deref() {
         validate_field(f)?;
         vec![f]

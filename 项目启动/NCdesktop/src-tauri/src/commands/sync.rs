@@ -299,10 +299,7 @@ fn import_single_session(
         imported_at: Some(now.clone()),
     };
 
-    let mut conn = database
-        .conn
-        .lock()
-        .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let mut conn = database.conn()?;
     let tx = conn
         .transaction()
         .map_err(|e| format!("开启事务失败: {e}"))?;

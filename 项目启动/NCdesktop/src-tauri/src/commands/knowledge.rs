@@ -60,7 +60,7 @@ pub fn get_concepts(
     db: State<'_, Database>,
     library_id: String,
 ) -> Result<Vec<ConceptWithStats>, String> {
-    let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = db.conn()?;
     get_concepts_with_stats(&conn, &library_id)
 }
 
@@ -70,7 +70,7 @@ pub fn get_concept_detail(
     db: State<'_, Database>,
     concept_id: String,
 ) -> Result<Option<ConceptDetail>, String> {
-    let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = db.conn()?;
     db_get_concept_detail(&conn, &concept_id)
 }
 
@@ -82,7 +82,7 @@ pub fn update_concept(
     name: Option<String>,
     definition: Option<String>,
 ) -> Result<(), String> {
-    let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = db.conn()?;
     db_update_concept(&conn, &concept_id, name.as_deref(), definition.as_deref())
 }
 
@@ -92,7 +92,7 @@ pub fn delete_concept(
     db: State<'_, Database>,
     concept_id: String,
 ) -> Result<(), String> {
-    let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = db.conn()?;
     db_delete_concept(&conn, &concept_id)
 }
 
@@ -124,19 +124,19 @@ pub async fn start_concept_extraction(
 ) -> Result<ExtractionProgress, String> {
     // 1. 读取 LLM 配置
     let client = {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         LLMClient::from_db_or_env(&conn)?
     };
 
     // 2. force_full 时先重置整个 library 的 concept_extracted_at 标记（escape hatch）
     if force_full {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         reset_library_concept_extracted_at(&conn, &library_id)?;
     }
 
     // 3. 查询需要处理的素材：force_full=false 仅查 concept_extracted_at IS NULL
     let assets = {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         fetch_library_assets_for_extraction(&conn, &library_id, force_full)?
     };
 
@@ -153,14 +153,14 @@ pub async fn start_concept_extraction(
     //    并发闭包内读取这两个快照（不变快照），写入 concepts 表时用 INSERT OR IGNORE +
     //    重新 SELECT id 解决"两个并发闭包同时插入同名 concept"的竞争（concepts.UNIQUE(library_id, name)）。
     let existing_concepts = {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         get_concepts_with_stats(&conn, &library_id)?
             .into_iter()
             .map(|c| (c.name.clone(), (c.id.clone(), c.user_edited)))
             .collect::<std::collections::HashMap<_, _>>()
     };
     let logged_pairs = {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         crate::db::concepts_extraction_log::fetch_logged_pairs(&conn, &library_id)?
     };
 
@@ -207,7 +207,7 @@ pub async fn start_concept_extraction(
                     truncate_content_for_concept(&content_snippet, CONCEPT_CONTENT_MAX_BYTES);
 
                 let assembled = {
-                    let conn = match db.conn.lock() {
+                    let conn = match db.conn() {
                         Ok(c) => c,
                         Err(e) => {
                             log::error!(
@@ -296,7 +296,7 @@ pub async fn start_concept_extraction(
                 // ─── 5.5 写入 concepts / cases / 标记 concept_extracted_at（短作用域抢锁）───
                 let mut local_concepts_count = 0usize;
                 {
-                    let conn = match db.conn.lock() {
+                    let conn = match db.conn() {
                         Ok(c) => c,
                         Err(e) => {
                             log::error!(
@@ -429,7 +429,7 @@ pub async fn start_concept_extraction(
     // 必须在发送 concept-extraction-done 事件之前完成并释放连接锁，
     // 确保前端收到事件时 concept_relations 数据已就绪。
     {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         match crate::db::co_occurrence::compute_co_occurrence(&conn, &library_id) {
             Ok(n) => log::info!("共现关系计算完成，新增/更新 {n} 条关系"),
             Err(e) => log::warn!("共现关系计算失败（不影响提取结果）: {e}"),
@@ -478,7 +478,7 @@ pub async fn synthesize_viewpoints(
     concept_id: String,
 ) -> Result<Vec<ConceptViewpoint>, String> {
     let (client, concept, cases) = {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         let client = LLMClient::from_db_or_env(&conn)?;
         let detail = db_get_concept_detail(&conn, &concept_id)?
             .ok_or_else(|| format!("概念不存在: {concept_id}"))?;
@@ -495,7 +495,7 @@ pub async fn synthesize_viewpoints(
     // 由独立的 build_cases_block helper 处理（与 build_synthesis_prompt 行为一致）。
     let cases_block = build_cases_block(&cases);
     let (messages, log_ctx) = {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         let msgs = assemble_messages_for_aggregation(
             &conn,
             AggregationVars {
@@ -520,7 +520,7 @@ pub async fn synthesize_viewpoints(
 
     // 先清空旧观点，再写入新的
     {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         delete_viewpoints_for_concept(&conn, &concept_id)?;
         for vp in &viewpoints {
             insert_viewpoint(&conn, vp)?;
@@ -541,7 +541,7 @@ pub async fn generate_extensions(
     concept_id: String,
 ) -> Result<Vec<ConceptExtension>, String> {
     let (client, concept) = {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         let client = LLMClient::from_db_or_env(&conn)?;
         let detail = db_get_concept_detail(&conn, &concept_id)?
             .ok_or_else(|| format!("概念不存在: {concept_id}"))?;
@@ -569,7 +569,7 @@ pub async fn generate_extensions(
     let extensions = parse_extensions(&response, &concept_id)?;
 
     {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         delete_extensions_for_concept(&conn, &concept_id)?;
         for ext in &extensions {
             insert_extension(&conn, ext)?;
@@ -935,7 +935,7 @@ pub fn knowledge_compute_co_occurrence(
     db: State<'_, Database>,
     library_id: String,
 ) -> Result<usize, String> {
-    let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = db.conn()?;
     crate::db::co_occurrence::compute_co_occurrence(&conn, &library_id)
 }
 

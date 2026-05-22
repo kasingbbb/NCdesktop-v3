@@ -3,12 +3,12 @@ use crate::extraction::scheduler::PipelineScheduler;
 use crate::llm::client::LLMClient;
 use crate::models;
 use crate::workspace;
-use rusqlite::Connection;
+use r2d2::Pool;
+use r2d2_sqlite::SqliteConnectionManager;
 use serde::Serialize;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex as StdMutex;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 const SETTING_ACTIVE_PROJECT: &str = "ui.active_project_id";
@@ -411,10 +411,7 @@ async fn apply_llm_classify_to_asset(
     // V17：先在短锁内解析 library_id（asset.project_id → project.library_id），
     // 再在锁外做文件 IO；organize 需要 DB 读，因此重新取一次锁。
     let library_id = {
-        let conn = database
-            .conn
-            .lock()
-            .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = database.conn()?;
         match db::project::get_by_id(&conn, &asset.project_id)? {
             Some(p) => p.library_id,
             None => {
@@ -434,10 +431,7 @@ async fn apply_llm_classify_to_asset(
     // 但这里 organize 内部既要查 DB 又要做 fs::rename，trade-off：让 organize 持锁，
     // 优于跨锁/锁外往返。生产路径下 organize 调用频率低（每个导入素材一次），可接受。
     let organized = {
-        let conn = database
-            .conn
-            .lock()
-            .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = database.conn()?;
         organize_asset_file_after_classify(&conn, &library_id, asset, &r)
     };
     let had_organize = organized.is_some();
@@ -481,10 +475,7 @@ async fn apply_llm_classify_to_asset(
         suggested_name: suggested_name_row.clone(),
     };
 
-    let conn = database
-        .conn
-        .lock()
-        .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
 
     db::asset::upsert_analysis(&conn, &ai_row)
         .map_err(|e| format!("写入 AI 分析失败: {e}"))?;
@@ -688,7 +679,7 @@ fn path_asset_meta(path: &Path) -> (String, String, String) {
 /// 重新锁 `Database` 产生死锁。`import_files_core` 本身是同步函数，没有 await，
 /// 因此天然不会跨 await 持锁。
 pub fn import_files_core<S: EnqueueScheduler>(
-    conn_mutex: &StdMutex<Connection>,
+    pool: &Pool<SqliteConnectionManager>,
     scheduler: &S,
     project_id: &str,
     paths: Vec<String>,
@@ -708,9 +699,9 @@ pub fn import_files_core<S: EnqueueScheduler>(
 
     // 一次性读出 AI 是否可用（短锁）
     let ai_pending_global = {
-        let conn = conn_mutex
-            .lock()
-            .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = pool
+            .get()
+            .map_err(|e| format!("数据库连接获取失败: {e}"))?;
         LLMClient::is_available_in_conn(&conn)
     };
 
@@ -775,9 +766,9 @@ pub fn import_files_core<S: EnqueueScheduler>(
         //  也无任何引用，目标目录会累积"UUID 前缀+原名"的幽灵文件，用户从 UI 看不到，
         //  但持续占磁盘；UNIQUE 冲突 / 锁竞争场景下会规律性触发）。
         {
-            let conn = conn_mutex
-                .lock()
-                .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+            let conn = pool
+                .get()
+                .map_err(|e| format!("数据库连接获取失败: {e}"))?;
             if let Err(e) = db::asset::insert(&conn, &asset) {
                 drop(conn);
                 if let Err(re) = fs::remove_file(&dest_path) {
@@ -873,10 +864,7 @@ pub async fn import_drop_paths(
 
     // 注意：该命令是 async，不能在 await 期间持有 SQLite 的 MutexGuard
     let (project_id, import_project_name) = {
-        let conn = database
-            .conn
-            .lock()
-            .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = database.conn()?;
         let pid = ensure_import_project_id(&conn)?;
         let pname = db::project::get_by_id(&conn, &pid)?
             .map(|p| p.name)
@@ -885,7 +873,7 @@ pub async fn import_drop_paths(
     };
 
     let scheduler_adapter = AppHandleEnqueue { app: &app };
-    let core_out = import_files_core(&database.conn, &scheduler_adapter, &project_id, paths)?;
+    let core_out = import_files_core(&database.pool, &scheduler_adapter, &project_id, paths)?;
 
     // 若 created 非空且至少有一个成功入队，则唤醒调度循环
     let any_enqueued = core_out.summary.created.len() > core_out.summary.failures_to_enqueue.len();
@@ -991,7 +979,7 @@ mod tests {
     /// 永远成功的 scheduler；副作用：往 `pipeline_tasks` 写一条 status='queued' 的行，
     /// 用以模拟真实 `PipelineScheduler::enqueue` 的可观察后果（满足 AC-4）。
     struct OkScheduler<'a> {
-        conn_mutex: &'a StdMutex<rusqlite::Connection>,
+        pool: &'a Pool<SqliteConnectionManager>,
         enqueued: StdMutex<Vec<String>>,
     }
 
@@ -999,9 +987,9 @@ mod tests {
         fn enqueue(&self, asset_id: &str) -> Result<String, String> {
             // 短锁：模拟真实 scheduler 在自己的事务里写 extracted_content + pipeline_tasks
             let conn = self
-                .conn_mutex
-                .lock()
-                .map_err(|e| format!("锁失败: {e}"))?;
+                .pool
+                .get()
+                .map_err(|e| format!("连接获取失败: {e}"))?;
             let task_id = uuid::Uuid::new_v4().to_string();
             let ec_id = uuid::Uuid::new_v4().to_string();
             let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
@@ -1050,7 +1038,7 @@ mod tests {
         let project_id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339();
         {
-            let conn = db.conn.lock().unwrap();
+            let conn = db.conn().unwrap();
             let lib = Library {
                 id: library_id.clone(),
                 name: "测试库".into(),
@@ -1111,11 +1099,11 @@ mod tests {
         let (_src_tmp, paths) = write_two_source_files();
 
         let scheduler = OkScheduler {
-            conn_mutex: &db.conn,
+            pool: &db.pool,
             enqueued: StdMutex::new(Vec::new()),
         };
 
-        let out = import_files_core(&db.conn, &scheduler, &project_id, paths)
+        let out = import_files_core(&db.pool, &scheduler, &project_id, paths)
             .expect("core 调用应成功");
 
         // 1) 两条 created，零失败
@@ -1127,7 +1115,7 @@ mod tests {
         );
 
         // 2) DB 中两条 root asset（source_asset_id IS NULL）
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
         let root_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM assets WHERE project_id = ?1 AND source_asset_id IS NULL",
@@ -1167,7 +1155,7 @@ mod tests {
             called: StdMutex::new(Vec::new()),
         };
 
-        let out = import_files_core(&db.conn, &scheduler, &project_id, paths.clone())
+        let out = import_files_core(&db.pool, &scheduler, &project_id, paths.clone())
             .expect("核心调用不应整体失败（enqueue 失败仅记 warn）");
 
         // 1) 仍 2 条 created（asset 行被保留）
@@ -1178,7 +1166,7 @@ mod tests {
         assert_eq!(out.summary.failures_to_enqueue.len(), 2, "ADR-006: 两条都应记入");
 
         // 3) DB 中两条 root asset 仍存在
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
         let asset_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM assets WHERE project_id = ?1",
@@ -1235,7 +1223,7 @@ mod tests {
     #[test]
     fn resolve_returns_none_for_other_or_empty() {
         let (db, _pid, _tmp) = fresh_db_with_project();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
         let lib_id: String = conn
             .query_row("SELECT id FROM libraries LIMIT 1", [], |r| r.get(0))
             .unwrap();
@@ -1250,7 +1238,7 @@ mod tests {
     #[test]
     fn resolve_hits_builtin_by_slug() {
         let (db, _pid, _tmp) = fresh_db_with_project();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
         let lib_id: String = conn
             .query_row("SELECT id FROM libraries LIMIT 1", [], |r| r.get(0))
             .unwrap();
@@ -1263,7 +1251,7 @@ mod tests {
     #[test]
     fn resolve_new_prefix_creates_llm_generated() {
         let (db, _pid, _tmp) = fresh_db_with_project();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
         let lib_id: String = conn
             .query_row("SELECT id FROM libraries LIMIT 1", [], |r| r.get(0))
             .unwrap();
@@ -1285,7 +1273,7 @@ mod tests {
     #[test]
     fn resolve_unknown_slug_auto_upserts_as_llm_generated() {
         let (db, _pid, _tmp) = fresh_db_with_project();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
         let lib_id: String = conn
             .query_row("SELECT id FROM libraries LIMIT 1", [], |r| r.get(0))
             .unwrap();
@@ -1299,7 +1287,7 @@ mod tests {
     #[test]
     fn resolve_follows_alias_to_target() {
         let (db, _pid, _tmp) = fresh_db_with_project();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
         let lib_id: String = conn
             .query_row("SELECT id FROM libraries LIMIT 1", [], |r| r.get(0))
             .unwrap();
@@ -1321,7 +1309,7 @@ mod tests {
         // + 返回 category_slug = "读书笔记"
         crate::testing::init_test_logger();
         let (db, project_id, _tmp) = fresh_db_with_project();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
         let lib_id: String = conn
             .query_row("SELECT id FROM libraries LIMIT 1", [], |r| r.get(0))
             .unwrap();
@@ -1366,7 +1354,7 @@ mod tests {
     #[test]
     fn organize_skipped_when_category_is_other() {
         let (db, project_id, _tmp) = fresh_db_with_project();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
         let lib_id: String = conn
             .query_row("SELECT id FROM libraries LIMIT 1", [], |r| r.get(0))
             .unwrap();

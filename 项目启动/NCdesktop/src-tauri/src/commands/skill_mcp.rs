@@ -58,7 +58,7 @@ pub async fn skill_export_package(
     db: State<'_, Database>,
 ) -> Result<String, String> {
     let skill = {
-        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        let conn = db.conn()?;
         get_skill(&conn, &skill_id)?
     };
 
@@ -71,7 +71,7 @@ pub async fn skill_export_package(
     // 加载知识单元
     let mut kus: Vec<SkillPackageKu> = Vec::new();
     for kid in &skill.ku_ids {
-        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        let conn = db.conn()?;
         if let Ok(Some(ku)) = get_knowledge_unit(&conn, kid) {
             kus.push(SkillPackageKu {
                 id: ku.id,

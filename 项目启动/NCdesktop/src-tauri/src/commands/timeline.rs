@@ -7,7 +7,7 @@ pub fn get_timeline(
     database: State<'_, Database>,
     project_id: String,
 ) -> Result<Option<models::Timeline>, String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     db::timeline::get_timeline_by_project(&conn, &project_id)
 }
 
@@ -19,7 +19,7 @@ pub fn create_timeline(
     end_time: String,
     duration: f64,
 ) -> Result<models::Timeline, String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     let timeline = models::Timeline {
         id: uuid::Uuid::new_v4().to_string(),
         project_id,
@@ -38,7 +38,7 @@ pub fn get_audio_tracks(
     database: State<'_, Database>,
     timeline_id: String,
 ) -> Result<Vec<models::AudioTrack>, String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     db::timeline::get_audio_tracks_by_timeline(&conn, &timeline_id)
 }
 
@@ -53,7 +53,7 @@ pub fn create_audio_track(
     sample_rate: i64,
     channels: i64,
 ) -> Result<models::AudioTrack, String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     let track = models::AudioTrack {
         id: uuid::Uuid::new_v4().to_string(),
         timeline_id,
@@ -77,7 +77,7 @@ pub fn get_keyframes(
     database: State<'_, Database>,
     timeline_id: String,
 ) -> Result<Vec<models::Keyframe>, String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     db::timeline::get_keyframes_by_timeline(&conn, &timeline_id)
 }
 
@@ -89,7 +89,7 @@ pub fn create_keyframe(
     anchor_time: f64,
     source: String,
 ) -> Result<models::Keyframe, String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     let keyframe = models::Keyframe {
         id: uuid::Uuid::new_v4().to_string(),
         timeline_id,
@@ -104,7 +104,7 @@ pub fn create_keyframe(
 
 #[tauri::command]
 pub fn delete_keyframe(database: State<'_, Database>, id: String) -> Result<(), String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     db::timeline::delete_keyframe(&conn, &id)
 }
 
@@ -115,7 +115,7 @@ pub fn get_markers(
     database: State<'_, Database>,
     timeline_id: String,
 ) -> Result<Vec<models::Marker>, String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     db::timeline::get_markers_by_timeline(&conn, &timeline_id)
 }
 
@@ -128,7 +128,7 @@ pub fn create_marker(
     color: String,
     marker_type: String,
 ) -> Result<models::Marker, String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     let marker = models::Marker {
         id: uuid::Uuid::new_v4().to_string(),
         timeline_id,
@@ -143,6 +143,6 @@ pub fn create_marker(
 
 #[tauri::command]
 pub fn delete_marker(database: State<'_, Database>, id: String) -> Result<(), String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     db::timeline::delete_marker(&conn, &id)
 }

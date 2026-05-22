@@ -97,10 +97,7 @@ pub fn scan_with_conn(
 /// 失败仅 warn，不让 setup 崩溃。返回总 missing 数（启动期日志用）。
 pub fn scan_all_projects(app: &AppHandle) -> Result<usize, String> {
     let database = app.state::<Database>();
-    let conn = database
-        .conn
-        .lock()
-        .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
 
     let missing_set = app.state::<SourceMissingSet>();
 

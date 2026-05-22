@@ -72,7 +72,7 @@ pub async fn synthesize_knowledge_units(
 
     // 1. 拉取 LLM client + 所有概念
     let (client, concepts) = {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         let client = LLMClient::from_db_or_env(&conn)?;
         let concepts = get_concepts_with_stats(&conn, &library_id)?;
         (client, concepts)
@@ -89,7 +89,7 @@ pub async fn synthesize_knowledge_units(
     //    - force=true：在单事务里删除旧 KU，再继续合成新 KU。
     if !force {
         let existing = {
-            let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+            let conn = db.conn()?;
             get_knowledge_units_summary(&conn, &library_id)?
         };
         if !existing.is_empty() {
@@ -107,7 +107,7 @@ pub async fn synthesize_knowledge_units(
         // 旧实现把 SELECT id + 多次 DELETE 拆成两次锁，中间存在 TOCTOU 窗口
         // （另一并发 synthesize 可能插入新 KU 不被清掉，然后两次 insert 翻倍）；
         // 这里改成单条 SQL 一把 DELETE，省锁也消除竞态。
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         let deleted = conn
             .execute(
                 "DELETE FROM knowledge_units WHERE library_id = ?1",
@@ -264,7 +264,7 @@ pub async fn synthesize_knowledge_units(
         // 收集来源素材 IDs（从 group 中所有概念的 source_asset_ids 合并）
         let source_asset_ids: Vec<String> = {
             let source_raw: Vec<String> = {
-                let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+                let conn = db.conn()?;
                 group
                     .concept_ids
                     .iter()
@@ -301,7 +301,7 @@ pub async fn synthesize_knowledge_units(
         };
 
         {
-            let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+            let conn = db.conn()?;
             insert_knowledge_unit(&conn, &unit)?;
         }
 
@@ -312,7 +312,7 @@ pub async fn synthesize_knowledge_units(
     emit_synthesis(&app, &library_id, "completed", groups.len(), units_written, None);
 
     // 返回最新的知识单元列表
-    let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = db.conn()?;
     get_knowledge_units_summary(&conn, &library_id)
 }
 

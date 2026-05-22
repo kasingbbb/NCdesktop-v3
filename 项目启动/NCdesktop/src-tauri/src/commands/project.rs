@@ -9,7 +9,7 @@ pub fn get_projects(
     database: State<'_, Database>,
     library_id: String,
 ) -> Result<Vec<models::Project>, String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     db::project::get_by_library(&conn, &library_id)
 }
 
@@ -18,7 +18,7 @@ pub fn get_project(
     database: State<'_, Database>,
     id: String,
 ) -> Result<Option<models::Project>, String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     db::project::get_by_id(&conn, &id)
 }
 
@@ -28,7 +28,7 @@ pub fn create_project(
     library_id: String,
     name: String,
 ) -> Result<models::Project, String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     let now = chrono::Utc::now().to_rfc3339();
     let project = models::Project {
         id: uuid::Uuid::new_v4().to_string(),
@@ -56,13 +56,13 @@ pub fn update_project(
     database: State<'_, Database>,
     project: models::Project,
 ) -> Result<(), String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     db::project::update(&conn, &project)
 }
 
 #[tauri::command]
 pub fn delete_project(app: AppHandle, database: State<'_, Database>, id: String) -> Result<(), String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     db::project::delete(&conn, &id)?;
     drop(conn);
     // 旧版：应用数据目录 assets/<projectId>

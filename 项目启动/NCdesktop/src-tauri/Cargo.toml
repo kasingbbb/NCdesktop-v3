@@ -22,6 +22,11 @@ log = "0.4"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 rusqlite = { version = "0.34", features = ["bundled"] }
+# review §二.8：r2d2 连接池替换全局 `Mutex<Connection>`，让 SQLite WAL 的"多读 +
+# 单写"并发真正生效。r2d2_sqlite 0.27 是依赖 rusqlite ^0.34 的最后一个版本
+# （0.28+ 已升到 rusqlite 0.35+），与本项目 rusqlite 0.34 对齐避免重复编译。
+r2d2 = "0.8"
+r2d2_sqlite = "0.27"
 dirs-next = "2"
 notify = "8"
 walkdir = "2"

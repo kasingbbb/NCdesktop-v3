@@ -123,10 +123,7 @@ fn workspace_startup_hooks() {
 }
 
 fn run_repair_locked(database: &Database) -> Result<RepairReport, String> {
-    let conn = database
-        .conn
-        .lock()
-        .map_err(|_| "数据库锁中毒".to_string())?;
+    let conn = database.conn()?;
     run_post_migration_repair(&conn, RepairMode::Lenient)
 }
 

@@ -89,10 +89,7 @@ pub fn confirm_import_events(
             .collect()
     };
 
-    let conn = db
-        .conn
-        .lock()
-        .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = db.conn()?;
 
     insert_events(
         &conn,
@@ -111,10 +108,7 @@ pub fn get_course_events(
     start_after: Option<String>,
     end_before: Option<String>,
 ) -> Result<Vec<CourseEvent>, String> {
-    let conn = db
-        .conn
-        .lock()
-        .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = db.conn()?;
     get_events(
         &conn,
         &library_id,
@@ -131,10 +125,7 @@ pub fn delete_calendar_source(
     calendar_source: String,
     source_url: Option<String>,
 ) -> Result<usize, String> {
-    let conn = db
-        .conn
-        .lock()
-        .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = db.conn()?;
     delete_by_source(&conn, &library_id, &calendar_source, source_url.as_deref())
 }
 
@@ -156,10 +147,7 @@ pub async fn refresh_ics_subscription(
     let events = parse_ics(&content)?;
     let total_parsed = events.len();
 
-    let conn = db
-        .conn
-        .lock()
-        .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = db.conn()?;
 
     // 2. 删除该 URL 的旧事件
     delete_by_source(&conn, &library_id, "ics_url", Some(&source_url))?;

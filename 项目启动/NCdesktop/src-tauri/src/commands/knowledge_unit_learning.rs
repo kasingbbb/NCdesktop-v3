@@ -43,7 +43,7 @@ pub async fn ku_generate_summary(
 ) -> Result<String, String> {
     // 缓存检查
     if !force_regenerate {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         if let Some(unit) = get_knowledge_unit(&conn, &knowledge_unit_id)? {
             if unit.summary.is_some() {
                 return Ok("cached".to_string());
@@ -53,7 +53,7 @@ pub async fn ku_generate_summary(
 
     // 读取 KU + LLM 客户端 + 来源文本
     let (client, title, core_insight, source_texts) = {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         let client = LLMClient::from_db_or_env(&conn)?;
         let unit = get_knowledge_unit(&conn, &knowledge_unit_id)?
             .ok_or_else(|| format!("知识单元不存在: {knowledge_unit_id}"))?;
@@ -89,7 +89,7 @@ pub async fn ku_generate_summary(
     // 持久化
     let now = chrono::Utc::now().to_rfc3339();
     {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         update_knowledge_unit_summary(&conn, &knowledge_unit_id, &result, &now)?;
     }
 
@@ -108,7 +108,7 @@ pub async fn ku_generate_explanation(
     knowledge_unit_id: String,
 ) -> Result<String, String> {
     let (client, title, core_insight, source_texts) = {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         let client = LLMClient::from_db_or_env(&conn)?;
         let unit = get_knowledge_unit(&conn, &knowledge_unit_id)?
             .ok_or_else(|| format!("知识单元不存在: {knowledge_unit_id}"))?;
@@ -143,7 +143,7 @@ pub async fn ku_generate_explanation(
     // 持久化（存储原始 JSON 字符串）
     let now = chrono::Utc::now().to_rfc3339();
     {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         update_knowledge_unit_explanation(&conn, &knowledge_unit_id, &result, &now)?;
     }
 
@@ -163,7 +163,7 @@ pub async fn ku_validate_explanation(
     user_explanation: String,
 ) -> Result<String, String> {
     let (client, title, summary) = {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         let client = LLMClient::from_db_or_env(&conn)?;
         let unit = get_knowledge_unit(&conn, &knowledge_unit_id)?
             .ok_or_else(|| format!("知识单元不存在: {knowledge_unit_id}"))?;
@@ -197,7 +197,7 @@ pub async fn ku_validate_explanation(
     // 持久化
     let now = chrono::Utc::now().to_rfc3339();
     {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         update_knowledge_unit_mirror_feedback(&conn, &knowledge_unit_id, &result, &now)?;
     }
 
@@ -213,7 +213,7 @@ pub fn ku_check_staleness(
     db: State<'_, Database>,
     knowledge_unit_id: String,
 ) -> Result<bool, String> {
-    let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = db.conn()?;
     let unit = get_knowledge_unit(&conn, &knowledge_unit_id)?;
     let unit = match unit {
         Some(u) => u,

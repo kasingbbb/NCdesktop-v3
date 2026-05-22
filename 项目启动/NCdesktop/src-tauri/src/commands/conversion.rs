@@ -98,10 +98,7 @@ pub fn convert_asset_to_markdown(
     database: State<'_, Database>,
     asset_id: String,
 ) -> Result<ConversionResult, String> {
-    let conn = database
-        .conn
-        .lock()
-        .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     let asset = db::asset::get_by_id(&conn, &asset_id)?
         .ok_or_else(|| format!("素材不存在: {asset_id}"))?;
     drop(conn);
@@ -131,9 +128,6 @@ pub fn get_conversion_meta(
     database: State<'_, Database>,
     asset_id: String,
 ) -> Result<Vec<ConversionMetaRow>, String> {
-    let conn = database
-        .conn
-        .lock()
-        .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     db::conversion_meta::list_by_source(&conn, &asset_id)
 }

@@ -95,8 +95,8 @@ pub fn run() {
             //   2) 若仍有 queued 任务，触发一次 scheduler.start()
             let needs_wake = {
                 let db = app.state::<Database>();
-                let lock_result = db.conn.lock();
-                match lock_result {
+                let conn_result = db.conn();
+                match conn_result {
                     Ok(conn) => {
                         if let Err(e) = db::extraction::reset_running_tasks(&conn) {
                             log::warn!("启动期重置 running 任务失败: {}", e);

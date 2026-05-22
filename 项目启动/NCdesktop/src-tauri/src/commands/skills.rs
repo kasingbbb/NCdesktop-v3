@@ -62,7 +62,7 @@ pub fn skill_get_list(
     db: State<'_, Database>,
     library_id: String,
 ) -> Result<Vec<Skill>, String> {
-    let conn = db.conn.lock().map_err(|e| format!("数据库锁: {e}"))?;
+    let conn = db.conn()?;
     get_skills(&conn, &library_id)
 }
 
@@ -71,7 +71,7 @@ pub fn skill_get_detail(
     db: State<'_, Database>,
     skill_id: String,
 ) -> Result<Option<Skill>, String> {
-    let conn = db.conn.lock().map_err(|e| format!("数据库锁: {e}"))?;
+    let conn = db.conn()?;
     get_skill(&conn, &skill_id)
 }
 
@@ -95,7 +95,7 @@ pub fn skill_create(
         created_at: now.clone(),
         updated_at: now,
     };
-    let conn = db.conn.lock().map_err(|e| format!("数据库锁: {e}"))?;
+    let conn = db.conn()?;
     insert_skill(&conn, &skill)?;
     Ok(skill)
 }
@@ -105,7 +105,7 @@ pub fn skill_delete(
     db: State<'_, Database>,
     skill_id: String,
 ) -> Result<(), String> {
-    let conn = db.conn.lock().map_err(|e| format!("数据库锁: {e}"))?;
+    let conn = db.conn()?;
     delete_skill(&conn, &skill_id)
 }
 
@@ -118,7 +118,7 @@ pub fn skill_update_ku_ids(
     ku_ids: Vec<String>,
 ) -> Result<(), String> {
     let now = chrono::Utc::now().to_rfc3339();
-    let conn = db.conn.lock().map_err(|e| format!("数据库锁: {e}"))?;
+    let conn = db.conn()?;
     let json = serde_json::to_string(&ku_ids).map_err(|e| format!("序列化失败: {e}"))?;
     update_skill_ku_ids(&conn, &skill_id, &json, &now)
 }
@@ -135,7 +135,7 @@ pub fn skill_compute_progress(
     db: State<'_, Database>,
     skill_id: String,
 ) -> Result<f64, String> {
-    let conn = db.conn.lock().map_err(|e| format!("数据库锁: {e}"))?;
+    let conn = db.conn()?;
     let skill = get_skill(&conn, &skill_id)?
         .ok_or_else(|| format!("技能不存在: {skill_id}"))?;
 
@@ -182,7 +182,7 @@ pub async fn skill_auto_aggregate(
 ) -> Result<u32, String> {
     // 收集 (inferred_course, ku_id) 对
     let course_ku_pairs: Vec<(String, String)> = {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁: {e}"))?;
+        let conn = db.conn()?;
         let mut stmt = conn
             .prepare(
                 "SELECT DISTINCT ai.inferred_course, ku.id
@@ -215,7 +215,7 @@ pub async fn skill_auto_aggregate(
 
     let mut created = 0u32;
     for (course, ku_ids) in course_to_kus {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁: {e}"))?;
+        let conn = db.conn()?;
 
         // 检查是否已有同名技能
         let existing_id: Option<String> = conn
@@ -263,7 +263,7 @@ pub async fn skill_generate_challenge(
     skill_id: String,
 ) -> Result<SkillChallenge, String> {
     let (client, skill_name, ku_summaries) = {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁: {e}"))?;
+        let conn = db.conn()?;
         let client = LLMClient::from_db_or_env(&conn)?;
         let skill = get_skill(&conn, &skill_id)?
             .ok_or_else(|| format!("技能不存在: {skill_id}"))?;
@@ -333,7 +333,7 @@ pub async fn skill_generate_challenge(
         .map_err(|e| format!("序列化失败: {e}"))?;
     let now = chrono::Utc::now().to_rfc3339();
     {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁: {e}"))?;
+        let conn = db.conn()?;
         update_skill_challenge(&conn, &skill_id, &challenge_json, &now)?;
     }
 
@@ -352,7 +352,7 @@ pub async fn skill_evaluate_answer(
     user_answer: String,
 ) -> Result<SkillEvaluation, String> {
     let (client, skill_name, challenge_json, ku_summaries) = {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁: {e}"))?;
+        let conn = db.conn()?;
         let client = LLMClient::from_db_or_env(&conn)?;
         let skill = get_skill(&conn, &skill_id)?
             .ok_or_else(|| format!("技能不存在: {skill_id}"))?;
@@ -447,7 +447,7 @@ pub async fn skill_evaluate_answer(
     };
 
     {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁: {e}"))?;
+        let conn = db.conn()?;
         update_skill_evaluation(
             &conn,
             &skill_id,

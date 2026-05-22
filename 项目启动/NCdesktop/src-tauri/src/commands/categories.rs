@@ -65,7 +65,7 @@ pub fn list_categories(
     include_disabled: Option<bool>,
 ) -> Result<Vec<Category>, String> {
     let include_disabled = include_disabled.unwrap_or(false);
-    let conn = database.conn.lock().map_err(|e| format!("DB 锁: {e}"))?;
+    let conn = database.conn()?;
     let sql = if include_disabled {
         "SELECT id, library_id, slug, label, icon, sort_order, is_disabled, is_builtin
            FROM categories WHERE library_id=?1 ORDER BY sort_order, id;"
@@ -96,7 +96,7 @@ pub fn create_category(
     if label.trim().is_empty() {
         return Err("label 不能为空".into());
     }
-    let conn = database.conn.lock().map_err(|e| format!("DB 锁: {e}"))?;
+    let conn = database.conn()?;
     conn.execute(
         "INSERT INTO categories (library_id, slug, label, sort_order, is_builtin)
          VALUES (?1, ?2, ?3, ?4, 0);",
@@ -126,7 +126,7 @@ pub fn rename_category(
     if label.trim().is_empty() {
         return Err("label 不能为空".into());
     }
-    let conn = database.conn.lock().map_err(|e| format!("DB 锁: {e}"))?;
+    let conn = database.conn()?;
     let n = conn
         .execute(
             "UPDATE categories SET label=?1, updated_at=datetime('now')
@@ -155,7 +155,7 @@ pub fn set_category_disabled(
     disabled: bool,
 ) -> Result<Category, String> {
     ensure_writable(mode.inner())?;
-    let conn = database.conn.lock().map_err(|e| format!("DB 锁: {e}"))?;
+    let conn = database.conn()?;
     let n = conn
         .execute(
             "UPDATE categories SET is_disabled=?1, updated_at=datetime('now')
@@ -183,7 +183,7 @@ pub fn delete_category(
     slug: String,
 ) -> Result<(), String> {
     ensure_writable(mode.inner())?;
-    let conn = database.conn.lock().map_err(|e| format!("DB 锁: {e}"))?;
+    let conn = database.conn()?;
     // 前置：is_builtin=0
     let is_builtin: i64 = conn
         .query_row(
@@ -225,7 +225,7 @@ pub fn add_category_alias(
     target_slug: String,
 ) -> Result<(), String> {
     ensure_writable(mode.inner())?;
-    let conn = database.conn.lock().map_err(|e| format!("DB 锁: {e}"))?;
+    let conn = database.conn()?;
     // 校验 target 存在
     let exists: i64 = conn
         .query_row(
@@ -258,7 +258,7 @@ mod tests {
     }
 
     fn seed(database: &Database) {
-        let conn = database.conn.lock().unwrap();
+        let conn = database.conn().unwrap();
         conn.execute_batch(
             "INSERT INTO libraries (id, name, root_path) VALUES ('lib','L','/tmp/L');
              INSERT INTO categories (library_id, slug, label, is_builtin) VALUES
@@ -293,7 +293,7 @@ mod tests {
         seed(&database);
         // 插入引用资产
         {
-            let conn = database.conn.lock().unwrap();
+            let conn = database.conn().unwrap();
             conn.execute_batch(
                 "INSERT INTO projects (id, library_id, name) VALUES ('p1','lib','P');
                  INSERT INTO assets (id, project_id, asset_type, name, file_path, category_slug)
@@ -302,7 +302,7 @@ mod tests {
             .unwrap();
         }
         // 模拟 delete_category 内部判定逻辑
-        let conn = database.conn.lock().unwrap();
+        let conn = database.conn().unwrap();
         let is_builtin: i64 = conn
             .query_row(
                 "SELECT is_builtin FROM categories WHERE library_id='lib' AND slug='mycat';",
@@ -326,7 +326,7 @@ mod tests {
     fn delete_blocked_when_builtin() {
         let database = fresh_db();
         seed(&database);
-        let conn = database.conn.lock().unwrap();
+        let conn = database.conn().unwrap();
         let is_builtin: i64 = conn
             .query_row(
                 "SELECT is_builtin FROM categories WHERE library_id='lib' AND slug='1-项目';",

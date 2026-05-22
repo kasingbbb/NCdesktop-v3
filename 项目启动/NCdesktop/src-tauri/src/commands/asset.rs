@@ -23,10 +23,7 @@ pub fn get_assets(
     project_id: String,
 ) -> Result<Vec<WorkspaceAssetView>, String> {
     let rows = {
-        let conn = database
-            .conn
-            .lock()
-            .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = database.conn()?;
         db::asset::list_root_assets(&conn, &project_id)?
         // 释放锁，防止后续 stat IO 长时间占用
     };
@@ -153,7 +150,7 @@ pub fn get_project_asset_tag_map(
     database: State<'_, Database>,
     project_id: String,
 ) -> Result<HashMap<String, Vec<String>>, String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     db::asset::get_tag_names_by_project(&conn, &project_id)
 }
 
@@ -163,7 +160,7 @@ pub fn get_assets_by_tag(
     project_id: String,
     tag_id: String,
 ) -> Result<Vec<models::Asset>, String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     db::asset::get_by_project_and_tag(&conn, &project_id, &tag_id)
 }
 
@@ -172,7 +169,7 @@ pub fn get_asset(
     database: State<'_, Database>,
     id: String,
 ) -> Result<Option<models::Asset>, String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     db::asset::get_by_id(&conn, &id)
 }
 
@@ -186,7 +183,7 @@ pub fn create_asset(
     file_size: i64,
     mime_type: String,
 ) -> Result<models::Asset, String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     let now = chrono::Utc::now().to_rfc3339();
     let asset = models::Asset {
         id: uuid::Uuid::new_v4().to_string(),
@@ -213,7 +210,7 @@ pub fn update_asset(
     database: State<'_, Database>,
     asset: models::Asset,
 ) -> Result<(), String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     db::asset::update(&conn, &asset)
 }
 
@@ -327,10 +324,7 @@ pub fn rename_asset(
     new_display_name: String,
 ) -> Result<WorkspaceAssetView, String> {
     let view = {
-        let conn = database
-            .conn
-            .lock()
-            .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = database.conn()?;
         rename_asset_inner(&conn, &asset_id, &new_display_name, None, None)?
         // 释放锁后再叠加 source-missing 标记
     };
@@ -357,10 +351,7 @@ pub fn rename_asset(
 #[tauri::command]
 pub fn delete_asset(database: State<'_, Database>, id: String) -> Result<(), String> {
     let report = {
-        let conn = database
-            .conn
-            .lock()
-            .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = database.conn()?;
         db::asset::delete_with_cascade(&conn, &id)?
         // 释放锁后再做磁盘清理，避免长时间持锁
     };
@@ -388,7 +379,7 @@ pub fn delete_asset(database: State<'_, Database>, id: String) -> Result<(), Str
 
 #[tauri::command]
 pub fn toggle_asset_star(database: State<'_, Database>, id: String) -> Result<bool, String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     db::asset::toggle_star(&conn, &id)
 }
 
@@ -397,7 +388,7 @@ pub fn get_asset_analysis(
     database: State<'_, Database>,
     asset_id: String,
 ) -> Result<Option<models::AIAnalysisRow>, String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     db::asset::get_analysis(&conn, &asset_id)
 }
 
@@ -455,10 +446,7 @@ pub fn move_asset_to_workspace_folder(
         ));
     }
 
-    let mut conn = database
-        .conn
-        .lock()
-        .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let mut conn = database.conn()?;
 
     let mut planned: Vec<(String, PathBuf, PathBuf, String)> = Vec::new();
     for id in &asset_ids {
@@ -582,10 +570,7 @@ pub fn move_assets(
 ) -> Result<Vec<models::Asset>, String> {
     let target_dir = workspace::ensure_project_workspace(&target_project_id)?;
 
-    let mut conn = database
-        .conn
-        .lock()
-        .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let mut conn = database.conn()?;
 
     db::project::get_by_id(&conn, &target_project_id)?
         .ok_or_else(|| format!("目标项目不存在: {target_project_id}"))?;
@@ -674,10 +659,7 @@ pub fn copy_assets(
 ) -> Result<Vec<models::Asset>, String> {
     let target_dir = workspace::ensure_project_workspace(&target_project_id)?;
 
-    let mut conn = database
-        .conn
-        .lock()
-        .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let mut conn = database.conn()?;
 
     db::project::get_by_id(&conn, &target_project_id)?
         .ok_or_else(|| format!("目标项目不存在: {target_project_id}"))?;

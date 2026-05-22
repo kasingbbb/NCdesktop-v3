@@ -30,10 +30,7 @@ pub async fn generate_course_preview(
 ) -> Result<CoursePreview, String> {
     // ── 1. 读取课程事件 ──────────────────────────────────────────────────────
     let (event, client, related_context) = {
-        let conn = db
-            .conn
-            .lock()
-            .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
 
         let event = get_event_by_id(&conn, &course_event_id)?
             .ok_or_else(|| format!("找不到课程事件: {course_event_id}"))?;
@@ -85,10 +82,7 @@ pub async fn generate_course_preview(
     };
 
     {
-        let conn = db
-            .conn
-            .lock()
-            .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         insert_or_replace(&conn, &preview)?;
     }
 
@@ -101,10 +95,7 @@ pub fn get_course_preview(
     db: State<'_, Database>,
     course_event_id: String,
 ) -> Result<Option<CoursePreview>, String> {
-    let conn = db
-        .conn
-        .lock()
-        .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = db.conn()?;
     get_by_event(&conn, &course_event_id)
 }
 
@@ -115,10 +106,7 @@ pub fn save_preview_notes(
     course_event_id: String,
     notes: String,
 ) -> Result<(), String> {
-    let conn = db
-        .conn
-        .lock()
-        .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = db.conn()?;
     update_user_notes(&conn, &course_event_id, &notes)
 }
 

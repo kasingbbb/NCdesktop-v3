@@ -138,7 +138,7 @@ mod tests {
     #[test]
     fn insert_and_get_preview() {
         let db = open_db();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
         let event_id = seed_event(&conn);
 
         let preview = make_preview(&event_id);
@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn insert_replaces_existing_preview() {
         let db = open_db();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
         let event_id = seed_event(&conn);
 
         // 第一次插入
@@ -172,7 +172,7 @@ mod tests {
     #[test]
     fn update_user_notes_preserves_ai_content() {
         let db = open_db();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
         let event_id = seed_event(&conn);
 
         let preview = make_preview(&event_id);
@@ -188,7 +188,7 @@ mod tests {
     #[test]
     fn get_nonexistent_returns_none() {
         let db = open_db();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
         let got = get_by_event(&conn, "no-such-event").expect("query ok");
         assert!(got.is_none());
     }

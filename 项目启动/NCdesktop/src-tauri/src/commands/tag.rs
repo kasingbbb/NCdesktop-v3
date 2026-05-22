@@ -4,7 +4,7 @@ use tauri::State;
 
 #[tauri::command]
 pub fn get_tags(database: State<'_, Database>) -> Result<Vec<models::Tag>, String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     db::tag::get_all(&conn)
 }
 
@@ -15,7 +15,7 @@ pub fn create_tag(
     color: String,
     source: String,
 ) -> Result<models::Tag, String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     let tag = models::Tag {
         id: uuid::Uuid::new_v4().to_string(),
         name,
@@ -29,7 +29,7 @@ pub fn create_tag(
 
 #[tauri::command]
 pub fn delete_tag(database: State<'_, Database>, id: String) -> Result<(), String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     db::tag::delete(&conn, &id)
 }
 
@@ -39,7 +39,7 @@ pub fn link_tag_to_asset(
     asset_id: String,
     tag_id: String,
 ) -> Result<(), String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     db::tag::link_to_asset(&conn, &asset_id, &tag_id)
 }
 
@@ -48,7 +48,7 @@ pub fn get_asset_tags(
     database: State<'_, Database>,
     asset_id: String,
 ) -> Result<Vec<models::Tag>, String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     db::tag::get_tags_for_asset(&conn, &asset_id)
 }
 
@@ -58,7 +58,7 @@ pub fn unlink_tag_from_asset(
     asset_id: String,
     tag_id: String,
 ) -> Result<(), String> {
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     db::tag::unlink_from_asset(&conn, &asset_id, &tag_id)
 }
 
@@ -73,7 +73,7 @@ pub fn ensure_asset_tag_by_name(
     if name.is_empty() {
         return Err("标签名不能为空".to_string());
     }
-    let conn = database.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
     let tag = db::tag::get_or_create_by_name(&conn, name, "user")?;
     db::tag::link_to_asset(&conn, &asset_id, &tag.id)?;
     Ok(tag)

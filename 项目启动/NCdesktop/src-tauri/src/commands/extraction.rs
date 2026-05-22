@@ -16,7 +16,7 @@ pub async fn extract_asset(app: AppHandle, asset_id: String) -> Result<String, S
 pub async fn extract_project_assets(app: AppHandle, project_id: String) -> Result<String, String> {
     let asset_ids: Vec<String> = {
         let db = app.state::<Database>();
-        let conn = db.conn.lock().map_err(|e| format!("DB 锁失败: {e}"))?;
+        let conn = db.conn()?;
         #[allow(deprecated)] // 非工作区路径：批量入队扫全部 asset，包含 derivative 也无副作用
         let assets = crate::db::asset::get_by_project(&conn, &project_id)?;
         assets.into_iter().map(|a| a.id).collect()
@@ -31,14 +31,14 @@ pub async fn extract_project_assets(app: AppHandle, project_id: String) -> Resul
 #[command]
 pub async fn get_extraction_status(app: AppHandle, asset_id: String) -> Result<Option<db_ext::ExtractedContentRow>, String> {
     let db = app.state::<Database>();
-    let conn = db.conn.lock().map_err(|e| format!("DB 锁失败: {e}"))?;
+    let conn = db.conn()?;
     db_ext::get_extracted_content(&conn, &asset_id)
 }
 
 #[command]
 pub async fn get_extracted_content(app: AppHandle, asset_id: String) -> Result<Option<db_ext::ExtractedContentRow>, String> {
     let db = app.state::<Database>();
-    let conn = db.conn.lock().map_err(|e| format!("DB 锁失败: {e}"))?;
+    let conn = db.conn()?;
     db_ext::get_extracted_content(&conn, &asset_id)
 }
 
@@ -46,7 +46,7 @@ pub async fn get_extracted_content(app: AppHandle, asset_id: String) -> Result<O
 pub async fn retry_extraction(app: AppHandle, asset_id: String) -> Result<String, String> {
     {
         let db = app.state::<Database>();
-        let conn = db.conn.lock().map_err(|e| format!("DB 锁失败: {e}"))?;
+        let conn = db.conn()?;
         db_ext::update_extraction_status(&conn, &asset_id, "pending", None)?;
     }
     extract_asset(app, asset_id).await
@@ -72,7 +72,7 @@ pub async fn retry_asset_conversion(app: AppHandle, asset_id: String) -> Result<
 #[command]
 pub async fn get_pipeline_progress(app: AppHandle) -> Result<db_ext::PipelineStats, String> {
     let db = app.state::<Database>();
-    let conn = db.conn.lock().map_err(|e| format!("DB 锁失败: {e}"))?;
+    let conn = db.conn()?;
     db_ext::get_pipeline_stats(&conn)
 }
 
@@ -95,7 +95,7 @@ pub async fn retrigger_extraction(app: AppHandle, asset_id: String) -> Result<()
     // ── 1 + 2 + 3：在一把锁内完成校验 + 幂等检查 + 重置
     let proceed = {
         let db = app.state::<Database>();
-        let conn = db.conn.lock().map_err(|e| format!("DB 锁失败: {e}"))?;
+        let conn = db.conn()?;
 
         // 1. 校验 asset 存在
         let _asset = crate::db::asset::get_by_id(&conn, &asset_id)?

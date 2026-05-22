@@ -33,10 +33,7 @@ pub struct SaveLlmConfigPayload {
 /// 获取 LLM 配置状态（不泄露完整 API Key）
 #[tauri::command]
 pub async fn get_llm_config(database: State<'_, Database>) -> Result<LLMConfig, String> {
-    let conn = database
-        .conn
-        .lock()
-        .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
 
     let (base_url, model) = LLMClient::display_defaults(&conn);
 
@@ -59,10 +56,7 @@ pub fn save_llm_config(
     database: State<'_, Database>,
     payload: SaveLlmConfigPayload,
 ) -> Result<(), String> {
-    let conn = database
-        .conn
-        .lock()
-        .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+    let conn = database.conn()?;
 
     let base = payload.base_url.trim().to_string();
     let model = payload.model.trim().to_string();
@@ -104,18 +98,12 @@ pub async fn llm_classify_with_db(
     content: String,
 ) -> Result<ClassifyResult, String> {
     let client = {
-        let conn = database
-            .conn
-            .lock()
-            .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = database.conn()?;
         LLMClient::from_db_or_env(&conn)?
     };
 
     let (messages, log_ctx) = {
-        let conn = database
-            .conn
-            .lock()
-            .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = database.conn()?;
         let msgs = assemble_messages_for_classify(&conn, ClassifyVars { content })?;
         let ctx = inspect_messages_for_log(&conn, "classify", &msgs);
         (msgs, ctx)
@@ -140,10 +128,7 @@ pub async fn llm_summarize(
     language: String,
 ) -> Result<LLMSummaryResult, String> {
     let client = {
-        let conn = database
-            .conn
-            .lock()
-            .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = database.conn()?;
         LLMClient::from_db_or_env(&conn)?
     };
 
@@ -190,10 +175,7 @@ pub async fn llm_enhance_export(
     markdown: String,
 ) -> Result<String, String> {
     let client = {
-        let conn = database
-            .conn
-            .lock()
-            .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = database.conn()?;
         LLMClient::from_db_or_env(&conn)?
     };
 

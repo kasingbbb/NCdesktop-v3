@@ -108,7 +108,7 @@ fn assemble_prompt_info(
 pub fn list_user_prompts(
     database: State<'_, Database>,
 ) -> Result<Vec<PromptInfo>, String> {
-    let conn = database.conn.lock().map_err(|e| format!("DB 锁: {e}"))?;
+    let conn = database.conn()?;
 
     // 一次 list_all + HashMap 索引，避免 4 次单查。
     let rows = db_user_prompt::list_all(&conn)?;
@@ -130,7 +130,7 @@ pub fn get_user_prompt(
     module: String,
 ) -> Result<PromptInfo, String> {
     validate_module(&module)?;
-    let conn = database.conn.lock().map_err(|e| format!("DB 锁: {e}"))?;
+    let conn = database.conn()?;
     let row = db_user_prompt::get(&conn, &module)?;
     Ok(assemble_prompt_info(&module, row))
 }
@@ -150,7 +150,7 @@ pub fn save_user_prompt(
     validate_byte_len(&text)?;
     validate_placeholders(&module, &text)?;
 
-    let conn = database.conn.lock().map_err(|e| format!("DB 锁: {e}"))?;
+    let conn = database.conn()?;
     db_user_prompt::upsert(&conn, &module, &text)?;
     Ok(())
 }
@@ -164,7 +164,7 @@ pub fn reset_user_prompt(
 ) -> Result<(), String> {
     ensure_writable(mode.inner())?;
 
-    let conn = database.conn.lock().map_err(|e| format!("DB 锁: {e}"))?;
+    let conn = database.conn()?;
     match module {
         None => db_user_prompt::delete_all(&conn)?,
         Some(m) => {

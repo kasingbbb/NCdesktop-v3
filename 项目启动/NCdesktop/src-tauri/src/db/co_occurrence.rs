@@ -169,7 +169,7 @@ mod tests {
     #[test]
     fn empty_library_returns_zero() {
         let db = open_db();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
         let count = compute_co_occurrence(&conn, "lib-empty").unwrap();
         assert_eq!(count, 0, "空 library 应返回 0");
     }
@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn single_concept_returns_zero() {
         let db = open_db();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
         let c = make_concept("lib-1", "概念A", vec!["asset-1"]);
         insert_concept(&conn, &c).unwrap();
         let count = compute_co_occurrence(&conn, "lib-1").unwrap();
@@ -189,7 +189,7 @@ mod tests {
     #[test]
     fn two_concepts_shared_asset_produces_one_relation() {
         let db = open_db();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
 
         let c1 = make_concept("lib-1", "概念A", vec!["asset-shared"]);
         let c2 = make_concept("lib-1", "概念B", vec!["asset-shared", "asset-extra"]);
@@ -227,7 +227,7 @@ mod tests {
     #[test]
     fn two_concepts_no_shared_asset_produces_no_relation() {
         let db = open_db();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
 
         let c1 = make_concept("lib-1", "概念X", vec!["asset-1"]);
         let c2 = make_concept("lib-1", "概念Y", vec!["asset-2"]);
@@ -251,7 +251,7 @@ mod tests {
     #[test]
     fn repeated_compute_updates_count_not_duplicate() {
         let db = open_db();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
 
         let c1 = make_concept("lib-1", "概念P", vec!["asset-shared"]);
         let c2 = make_concept("lib-1", "概念Q", vec!["asset-shared"]);
@@ -291,7 +291,7 @@ mod tests {
     #[test]
     fn direction_always_a_less_than_b() {
         let db = open_db();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
 
         // 构造两个具体 ID，确保 id_b < id_a（故意逆序）
         let now = chrono::Utc::now().to_rfc3339();
@@ -346,7 +346,7 @@ mod tests {
     #[test]
     fn three_concepts_partial_overlap() {
         let db = open_db();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn().unwrap();
 
         let ca = make_concept("lib-3", "概念A", vec!["asset-1", "asset-2"]);
         let cb = make_concept("lib-3", "概念B", vec!["asset-1"]);          // 与A共享 asset-1

@@ -54,7 +54,7 @@ pub async fn infer_asset_context(
     library_id: String,
 ) -> Result<AssetInference, String> {
     let inference = {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
 
         // ── 1. 加载素材基础信息 ────────────────────────────────────────────────
         let (asset_name, captured_at, _project_id): (String, String, String) = conn
@@ -241,7 +241,7 @@ pub async fn infer_asset_context(
     if inference.confidence < 0.65 {
         // 读取候选 KU 详情用于 Toast
         let candidates: Vec<CandidateKu> = {
-            let conn = db.conn.lock().map_err(|e| format!("数据库锁: {e}"))?;
+            let conn = db.conn()?;
             inference
                 .closest_knowledge_ids
                 .iter()
@@ -266,7 +266,7 @@ pub async fn infer_asset_context(
         };
 
         let asset_name = {
-            let conn = db.conn.lock().map_err(|e| format!("数据库锁: {e}"))?;
+            let conn = db.conn()?;
             conn.query_row(
                 "SELECT name FROM assets WHERE id = ?1",
                 params![asset_id],
@@ -306,7 +306,7 @@ pub async fn infer_library_assets(
 ) -> Result<u32, String> {
     // 找到库中所有没有推断记录的素材
     let asset_ids: Vec<String> = {
-        let conn = db.conn.lock().map_err(|e| format!("数据库锁: {e}"))?;
+        let conn = db.conn()?;
         let mut stmt = conn
             .prepare(
                 "SELECT a.id FROM assets a
@@ -340,7 +340,7 @@ pub fn get_asset_inference_result(
     db: State<'_, Database>,
     asset_id: String,
 ) -> Result<Option<AssetInference>, String> {
-    let conn = db.conn.lock().map_err(|e| format!("数据库锁: {e}"))?;
+    let conn = db.conn()?;
     crate::db::knowledge_units::get_asset_inference(&conn, &asset_id)
 }
 

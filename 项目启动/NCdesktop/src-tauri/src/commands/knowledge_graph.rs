@@ -56,7 +56,7 @@ pub fn get_knowledge_graph(
     db: State<'_, Database>,
     library_id: String,
 ) -> Result<KnowledgeGraphData, String> {
-    let conn = db.conn.lock().map_err(|e| format!("数据库锁: {e}"))?;
+    let conn = db.conn()?;
 
     // ── 1. 加载知识单元节点 ────────────────────────────────────────────────────
     let mut stmt = conn
