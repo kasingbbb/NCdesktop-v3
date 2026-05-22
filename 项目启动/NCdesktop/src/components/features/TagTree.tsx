@@ -31,13 +31,13 @@ export function TagTree() {
         aria-expanded={expanded}
         aria-controls="tag-tree-list"
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center justify-between px-[var(--space-3)] py-[var(--space-1)] text-[var(--text-xs)] uppercase tracking-[0.08em]"
-        style={{ color: "var(--text-tertiary)" }}
+        className="w-full flex items-center justify-between px-[14px] pt-[8px] pb-[4px] text-[10px] font-bold uppercase tracking-[0.08em]"
+        style={{ color: "var(--sidebar-text-dim)" }}
       >
         <span className="flex items-center gap-[var(--space-1)]">
           {expanded ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
           Tags
-          <span className="ml-1 normal-case tracking-normal tabular-nums" style={{ color: "var(--text-tertiary)" }}>
+          <span className="ml-1 normal-case tracking-normal tabular-nums" style={{ color: "var(--sidebar-text-dim)" }}>
             {tags.length}
           </span>
         </span>
@@ -69,24 +69,24 @@ export function TagTree() {
             value={filterText}
             onChange={(e) => setFilterText(e.target.value)}
             placeholder="过滤标签"
-            className="w-[calc(100%-var(--space-6))] mx-[var(--space-3)] mb-[var(--space-2)] px-[var(--space-2)] py-[var(--space-1)] text-[var(--text-sm)] rounded-[var(--radius-sm)]"
+            className="w-[calc(100%-var(--space-6))] mx-[var(--space-3)] mb-[var(--space-2)] px-[var(--space-2)] py-[var(--space-1)] text-[12px] rounded-[var(--radius-sm)]"
             style={{
-              border: "1px solid var(--border-primary)",
-              background: "var(--surface-secondary)",
-              color: "var(--text-primary)",
+              border: "1px solid var(--sidebar-divider)",
+              background: "rgba(255,255,255,0.05)",
+              color: "var(--sidebar-text)",
             }}
           />
           {tags.length === 0 ? (
             <p
-              className="px-[var(--space-3)] text-[var(--text-xs)]"
-              style={{ color: "var(--text-tertiary)" }}
+              className="px-[14px] text-[11px]"
+              style={{ color: "var(--sidebar-text-dim)" }}
             >
               暂无标签；在 Inspector 中为素材添加标签后将显示于此。
             </p>
           ) : filteredTags.length === 0 ? (
             <p
-              className="px-[var(--space-3)] text-[var(--text-xs)]"
-              style={{ color: "var(--text-tertiary)" }}
+              className="px-[14px] text-[11px]"
+              style={{ color: "var(--sidebar-text-dim)" }}
             >
               无匹配标签
             </p>

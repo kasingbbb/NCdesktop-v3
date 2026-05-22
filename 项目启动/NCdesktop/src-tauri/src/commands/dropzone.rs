@@ -915,6 +915,8 @@ pub async fn create_dropzone_window(app: AppHandle) -> Result<(), String> {
         .resizable(true)
         .always_on_top(true)
         .decorations(false)
+        .transparent(true)
+        .shadow(false)
         .skip_taskbar(true)
         .build()
         .map_err(|e| format!("创建悬浮窗失败: {e}"))?;

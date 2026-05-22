@@ -243,6 +243,8 @@ export function DropzoneApp() {
         style={{
           background: "#1a2233",
           borderColor: "#2d3a50",
+          boxShadow:
+            "0 10px 30px rgba(0, 0, 0, 0.35), 0 2px 6px rgba(0, 0, 0, 0.18)",
         }}
       >
         {/* 顶部拖动条 */}
