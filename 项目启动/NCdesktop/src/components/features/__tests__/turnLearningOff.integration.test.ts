@@ -53,15 +53,15 @@ describe("turnLearningOff — 非学习 section 直走非跳转路径（B-4/5）
     expect(useSettingsStore.getState().settings.showLearningFeatures).toBe(false);
   });
 
-  it("B-5：section='starred' + show=true → section 不动，show=false", async () => {
+  it("B-5：section='recent' + show=true → section 不动，show=false", async () => {
     useSettingsStore.setState({
       settings: { ...INITIAL_SETTINGS, showLearningFeatures: true },
     });
-    useUIStore.setState({ ...INITIAL_UI, activeSidebarSection: "starred" });
+    useUIStore.setState({ ...INITIAL_UI, activeSidebarSection: "recent" });
 
     await turnLearningOff();
 
-    expect(useUIStore.getState().activeSidebarSection).toBe("starred");
+    expect(useUIStore.getState().activeSidebarSection).toBe("recent");
     expect(useSettingsStore.getState().settings.showLearningFeatures).toBe(false);
   });
 

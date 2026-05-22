@@ -21,7 +21,6 @@ interface MagicMomentState {
 // ── SidebarSection 兼容迁移（ADR-001） ───────────────────────────
 const VALID_SECTIONS: readonly SidebarSection[] = [
   "recent",
-  "starred",
   "projects",
   "tags",
   "knowledge-hub",
@@ -58,6 +57,10 @@ export function migrateLegacySection(raw: unknown): SidebarSection {
   }
   if (raw === "search") {
     devWarn(`[uiStore] migrateLegacySection 已删除值 "search" → recent`);
+    return "recent";
+  }
+  if (raw === "starred") {
+    devWarn(`[uiStore] migrateLegacySection 已删除值 "starred" → recent`);
     return "recent";
   }
   devWarn(`[uiStore] migrateLegacySection 未知值 "${raw}" → recent`);

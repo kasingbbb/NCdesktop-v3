@@ -200,7 +200,7 @@ describe("turnLearningOn（AC-6）", () => {
     });
     useUIStore.setState({
       ...INITIAL_UI,
-      activeSidebarSection: "starred",
+      activeSidebarSection: "recent",
       _learningJustEnabled: false,
     });
 
@@ -208,7 +208,7 @@ describe("turnLearningOn（AC-6）", () => {
 
     expect(useSettingsStore.getState().settings.showLearningFeatures).toBe(true);
     expect(useUIStore.getState()._learningJustEnabled).toBe(true);
-    expect(useUIStore.getState().activeSidebarSection).toBe("starred");
+    expect(useUIStore.getState().activeSidebarSection).toBe("recent");
   });
 });
 

@@ -116,7 +116,7 @@ export function ContentArea({ onSearchOpen }: ContentAreaProps) {
     );
   }
 
-  const isLibraryView = ["projects", "recent", "search", "starred"].includes(activeSidebarSection);
+  const isLibraryView = ["projects", "recent"].includes(activeSidebarSection);
 
   if (isLibraryView) {
     return (

@@ -32,8 +32,8 @@ describe("migrateLegacySection (ADR-001 矩阵)", () => {
     expect(migrateLegacySection("recent")).toBe("recent");
   });
 
-  it("合法新值原样返回（starred）", () => {
-    expect(migrateLegacySection("starred")).toBe("starred");
+  it("已删除值 starred 迁移到 recent", () => {
+    expect(migrateLegacySection("starred")).toBe("recent");
   });
 
   it("合法新值原样返回（projects / tags / today / calendar）", () => {

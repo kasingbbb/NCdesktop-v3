@@ -1,9 +1,10 @@
-import { Clock, Star, CalendarDays, Sun, Search, Lightbulb, FolderOpen } from "lucide-react";
+import { Clock, CalendarDays, Sun, Search, Lightbulb, FolderOpen } from "lucide-react";
 import { SidebarItem, SidebarSection } from "./SidebarItem";
 import { ProjectTree } from "../features/ProjectTree";
 import { TagTree } from "../features/TagTree";
 import { SidebarFooter } from "./SidebarFooter";
 import { useUIStore } from "../../stores/uiStore";
+import { useProjectStore } from "../../stores/projectStore";
 import { useFeatureToggles } from "../../stores/settingsStore";
 
 interface SidebarProps {
@@ -14,7 +15,15 @@ interface SidebarProps {
 
 export function Sidebar({ width, onSettingsOpen, onSearchOpen }: SidebarProps) {
   const { activeSidebarSection, setSidebarSection } = useUIStore();
+  const setActiveProject = useProjectStore((s) => s.setActiveProject);
   const { showKnowledgeSystem, showStudentCenter } = useFeatureToggles();
+
+  // 点击「项目」/「最近」时清掉 activeProjectId，
+  // 否则即使切了 section，ContentArea 仍会渲染当前项目的 AssetListView。
+  const gotoLibrary = (section: "projects" | "recent") => {
+    setActiveProject(null);
+    setSidebarSection(section);
+  };
 
   return (
     <aside
@@ -53,19 +62,13 @@ export function Sidebar({ width, onSettingsOpen, onSearchOpen }: SidebarProps) {
           icon={<FolderOpen size={14} />}
           label="项目"
           active={activeSidebarSection === "projects"}
-          onClick={() => setSidebarSection("projects")}
+          onClick={() => gotoLibrary("projects")}
         />
         <SidebarItem
           icon={<Clock size={14} />}
           label="最近"
           active={activeSidebarSection === "recent"}
-          onClick={() => setSidebarSection("recent")}
-        />
-        <SidebarItem
-          icon={<Star size={14} />}
-          label="收藏"
-          active={activeSidebarSection === "starred"}
-          onClick={() => setSidebarSection("starred")}
+          onClick={() => gotoLibrary("recent")}
         />
         {showStudentCenter && (
           <SidebarItem
