@@ -41,18 +41,25 @@ pub fn bootstrap(db_path: &Path) -> BootstrapResult {
         Ok(db) => db,
         Err(e) => {
             log::error!("启动迁移失败，进入 ReadOnly 安全模式: {e}");
-            // 退路：再次以原生模式打开，保证 query-only 命令可用
-            let conn = match rusqlite::Connection::open(db_path) {
-                Ok(c) => c,
-                Err(e2) => {
-                    // 最坏情形：连只读 conn 都打不开 → 用 in-memory 占位（命令将拒写）
-                    log::error!("DB 文件无法打开: {e2}，使用内存占位");
-                    rusqlite::Connection::open_in_memory().expect("内存 conn")
+            // 退路：直接用 r2d2 重新建一个最小 pool（不跑 migration / PRAGMA）。
+            // - 先尝试 file pool，让 query-only 命令仍能读现有 DB；
+            // - 失败再退回 in-memory pool（占位让命令不 panic，写命令会被 AppMode::ReadOnly 拦截）。
+            let pool = {
+                use r2d2_sqlite::SqliteConnectionManager;
+                let file_mgr = SqliteConnectionManager::file(db_path);
+                match r2d2::Pool::builder().max_size(1).build(file_mgr) {
+                    Ok(p) => p,
+                    Err(e2) => {
+                        log::error!("DB 文件无法打开: {e2}，使用内存占位 pool");
+                        let mem_mgr = SqliteConnectionManager::memory();
+                        r2d2::Pool::builder()
+                            .max_size(1)
+                            .build(mem_mgr)
+                            .expect("内存 pool 必须可建")
+                    }
                 }
             };
-            let database = Database {
-                conn: std::sync::Mutex::new(conn),
-            };
+            let database = Database { pool };
             return BootstrapResult {
                 database,
                 mode: AppMode::ReadOnly { reason: e },
