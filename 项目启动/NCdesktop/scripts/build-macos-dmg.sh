@@ -197,11 +197,13 @@ fi
 step "step 4b/10 inject runtime into .app"
 mkdir -p "${RESOURCES_DIR}"
 rm -rf "${RESOURCES_DIR}/python" "${RESOURCES_DIR}/markitdown-venv" "${RESOURCES_DIR}/runtime-manifest.json"
-cp -R "${ROOT_DIR}/build/runtime/python"                "${RESOURCES_DIR}/python"
-# hotfix 2026-05-14: manifest 真相源 = src-tauri/resources/runtime-manifest.json
-# （prepare-embedded-markitdown-runtime.sh:144 写到此处，ADR-010 新 schema 8 字段含 imports 7 项）；
-# build/runtime/runtime-manifest.json 是早期老 schema 残留（pythonVersion/markitdownVersion 4 字段），
-# task_007 RuntimeManifest 严格 deserialize 该老 schema 必失败 → E_RUNTIME_MISSING。
+# hotfix 2026-05-26: python 源路径与 manifest 源路径必须一致 ——
+# `prepare-embedded-python.sh` 写到 `src-tauri/resources/python`（task_001 落点），
+# `prepare-embedded-markitdown-runtime.sh` pip install 到同目录的 site-packages，
+# `prepare-embedded-markitdown-runtime.sh:144` 写 `src-tauri/resources/runtime-manifest.json`。
+# 历史 line 200 写的 `build/runtime/python` 是 2026-05-14 hotfix 漏改的残留路径
+# （manifest 路径修了、python 路径没修），导致 step 4b 必失败：cp: No such file。
+cp -R "${ROOT_DIR}/src-tauri/resources/python"           "${RESOURCES_DIR}/python"
 cp    "${ROOT_DIR}/src-tauri/resources/runtime-manifest.json" "${RESOURCES_DIR}/runtime-manifest.json"
 # Recreate the venv-shim with *intra-bundle relative* symlinks (the build/
 # runtime shim points at absolute build paths and would break once relocated).
