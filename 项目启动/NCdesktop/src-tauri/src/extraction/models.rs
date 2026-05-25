@@ -41,6 +41,14 @@ pub struct ExtractOptions {
     /// `Some(code)` → markitdown extract 入口立即短路返回（不进 python 子进程）；
     /// `None` → 自检通过（或调用方未注入），走常规路径。
     pub runtime_check_failed: Option<crate::extraction::failure_code::FailureCode>,
+    /// PDF 标记提取脚本绝对路径（resources/scripts/extract_pdf_annotations.py）。
+    ///
+    /// `Some(path)` 且 mime=application/pdf 时，markitdown 主转换成功后追加调用，
+    /// 用 pdfplumber 提取 Highlight/Underline/StrikeOut/Squiggly/Text/FreeText/Ink
+    /// 等用户标记，拼接为 "## 用户标记" 章节附加到 MD 末尾。
+    ///
+    /// `None` → 跳过 annotation 提取（dev 环境未注入 / 非 PDF 文件）。
+    pub annotations_script_path: Option<String>,
 }
 
 pub fn markdown_to_segments(markdown: &str) -> Vec<ContentSegment> {

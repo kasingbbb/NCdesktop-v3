@@ -32,7 +32,8 @@
     "active": true,
     "targets": "all",
     "resources": [
-      "resources/runtime-manifest.json"
+      "resources/runtime-manifest.json",
+      "resources/scripts/*.py"
     ],
     "icon": [
       "icons/32x32.png",

@@ -6,6 +6,9 @@ pub mod runtime_check;
 // task_009：扫描型 PDF 路由防呆 —— 结构性嗅探（XObject + Font 引用判定）。
 // 仅由 scheduler.rs 的 `application/pdf` 路由分支调用，禁止启发式（H6）。
 pub mod scan_pdf_detect;
+// PDF 用户标记提取 —— 调用 resources/scripts/extract_pdf_annotations.py。
+// markitdown 转换成功后追加调用，拼接 "## 用户标记" 章节到 MD 末尾。
+pub mod pdf_annotations;
 // task_008 已重新激活：M-1 关闭点。scheduler 依赖的底层符号
 // （Asset.source_asset_id / db::extraction / sha2 / conversion_meta /
 //  embedded venv 探测 / get_fallback_extractor_for_excluding）

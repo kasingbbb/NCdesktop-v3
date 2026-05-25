@@ -2,33 +2,43 @@
 //!
 //! ## 设计原则（ADR-006 / H6 硬约束）
 //!
-//! - **只做结构性判定**：读 PDF 首页 page tree 的 Resources 字典，
-//!   判定 `XObject` 是否**全部**为 `Subtype=/Image` **且** 整页无 `Font` 字典引用；
+//! - **只做结构性判定**：读 PDF 采样页 page tree 的 Resources 字典，
+//!   判定 `XObject` 是否**全部**为 `Subtype=/Image` **且** 采样页无 `Font` 字典引用；
 //! - **严禁启发式**：
 //!   - 不基于"运行 markitdown 后 stdout 长度 < N" 来判扫描（污染 conversion_meta）；
 //!   - 不基于"文本字数 < N 即视为扫描"（H6 把分类器划到 P1）。
 //! - **失败显式**：lopdf 解析异常 / 加密 PDF / 无 page tree → `Err(io::Error)`，
 //!   由调用方按 `ParseError` 处理；**不可"猜测"成 scan**。
 //!
+//! ## 多页采样（2026-05-25 修订）
+//!
+//! 历史实现只看首页；但 z-library 等"重新封装"的 PDF 常把封面页栅格化为单张图像，
+//! 首页结构上等同扫描件（无 Font、仅 Image XObject），却被误判成全本扫描。
+//! 现采样 **[首页, 中间页, 末页]** 共最多 3 页：
+//! - **任一页含 Font 引用 → 立即判为非扫描（return false）**；
+//! - 全部采样页都无 Font 引用 + 首页 XObject 全为 Image → 判为扫描（return true）；
+//! - 其他情况保守返回 false（让 markitdown 自尝试）。
+//!
 //! ## 仅供 scheduler.rs 的 `application/pdf` 路由分支调用
 //!
 //! 返回 `Ok(true)` → scheduler 应短路写 `conversion_meta.failure_code = EScanPdfUnsupported`
 //! 并产出 placeholder，**不再**进 markitdown 子进程。
 
+use std::collections::BTreeMap;
 use std::io;
 use std::path::Path;
 
 use lopdf::{Dictionary, Document, Object, ObjectId};
 
-/// 判定首页是否"扫描型 PDF"（结构性嗅探，非启发式）。
+/// 判定 PDF 是否"扫描型"（多页采样结构性嗅探，非启发式）。
 ///
 /// 返回：
-/// - `Ok(true)`  → 首页 Resources 仅含 Image XObject 且无 Font 字典引用 → 视为扫描型；
-/// - `Ok(false)` → 含 Font 引用 / 含非 Image XObject / 不含 XObject → 视为可读文本（保守）；
+/// - `Ok(true)`  → 采样页全部无 Font + 首页 XObject 全为 Image → 视为扫描型；
+/// - `Ok(false)` → 任一采样页含 Font 引用 / 首页不含 XObject / 含非 Image XObject → 视为可读文本（保守）；
 /// - `Err(io::Error)` → PDF 加载 / 解析失败 / 加密 / 无 page tree → 调用方按 ParseError 处理。
 ///
-/// **保守语义**：若结构信息不充分（无 XObject、无 Font），返回 `false` 让 markitdown 自己尝试；
-/// 只有"明确像扫描件"（仅图、无字体）才返回 `true`。误路由率 0% 的语义是
+/// **保守语义**：若结构信息不充分，返回 `false` 让 markitdown 自己尝试；
+/// 只有"明确像扫描件"（采样页全无字体 + 首页仅图）才返回 `true`。误路由率 0% 的语义是
 /// "把文本 PDF 误判为扫描" = 0；这里宁可漏判扫描件（让 markitdown 输出空 → 走 task_008
 /// `EOutputEmpty` 链路），也不可把文本件挡在外面。
 pub fn is_scan_pdf(path: &Path) -> Result<bool, io::Error> {
@@ -45,33 +55,53 @@ pub fn is_scan_pdf(path: &Path) -> Result<bool, io::Error> {
     }
 
     let pages = doc.get_pages();
-    let first_page_id = pages
-        .into_iter()
-        .next()
-        .map(|(_, id)| id)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "pdf has no page tree"))?;
+    if pages.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "pdf has no page tree",
+        ));
+    }
 
-    // 首页字典 —— Resources 可能直接挂在 page 节点，也可能继承自 Pages 树父节点。
+    let sampled = sample_page_ids(&pages);
+
+    // ─── (1) 任一采样页含 Font 引用 → 立即判为非扫描 ───────────────────────
+    for page_id in &sampled {
+        let page_dict = match doc.get_dictionary(*page_id) {
+            Ok(d) => d,
+            Err(_) => continue, // 某采样页字典缺失，跳过，看其他采样页
+        };
+        let resources = match resolve_resources(&doc, page_dict, *page_id) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        if has_font_reference(&doc, &resources) {
+            return Ok(false);
+        }
+    }
+
+    // ─── (2) 全部采样页都无 Font → 用首页 XObject 严格判扫描 ───────────────
+    // 复用历史"首页 XObject 全为 Image"判定 —— 避免对扫描件的判定标准被多页采样削弱。
+    let first_page_id = *pages.values().next().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "pdf has no page tree")
+    })?;
+
     let page_dict = doc.get_dictionary(first_page_id).map_err(|e| {
-        io::Error::new(io::ErrorKind::InvalidData, format!("get first page dict failed: {e}"))
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("get first page dict failed: {e}"),
+        )
     })?;
 
     let resources = resolve_resources(&doc, page_dict, first_page_id).map_err(|e| {
-        io::Error::new(io::ErrorKind::InvalidData, format!("resolve resources failed: {e}"))
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("resolve resources failed: {e}"),
+        )
     })?;
 
-    // ─── (1) 若 Resources 含 Font 字典（任一字体引用即可）→ 非扫描 ────────────
-    if has_font_reference(&doc, &resources) {
-        return Ok(false);
-    }
-
-    // ─── (2) 检查 XObject 字典：是否"非空 且 全部为 Image" ───────────────────
     let xobjects = match resolve_xobject_dict(&doc, &resources) {
         Some(d) => d,
-        None => {
-            // 无 XObject → 保守判非扫描（让 markitdown 自尝试）
-            return Ok(false);
-        }
+        None => return Ok(false),
     };
 
     if xobjects.iter().count() == 0 {
@@ -85,6 +115,34 @@ pub fn is_scan_pdf(path: &Path) -> Result<bool, io::Error> {
     }
 
     Ok(true)
+}
+
+/// 采样 [首页, 中间页, 末页]，去重后保持页码升序。
+///
+/// - 1 页 PDF → `[1]`
+/// - 2 页 PDF → `[1, 2]`
+/// - N 页 PDF (N ≥ 3) → `[1, N/2+1, N]`（中间页取靠后整数，避免单页 PDF 退化）
+///
+/// 设计取舍：3 页采样足以区分"封面图 + 文字正文"（z-library 风格）与"全本扫描件"。
+/// 真扫描件的所有页都是 Image XObject；只要中间页或末页含 Font 即可命中文本 PDF。
+fn sample_page_ids(pages: &BTreeMap<u32, ObjectId>) -> Vec<ObjectId> {
+    let total = pages.len() as u32;
+    if total == 0 {
+        return vec![];
+    }
+    let mut indices: Vec<u32> = vec![1];
+    if total >= 2 {
+        indices.push(total);
+    }
+    if total >= 3 {
+        indices.push(total / 2 + 1);
+    }
+    indices.sort();
+    indices.dedup();
+    indices
+        .into_iter()
+        .filter_map(|i| pages.get(&i).copied())
+        .collect()
 }
 
 /// 解析"首页可见的 Resources 字典"：
@@ -541,5 +599,185 @@ mod tests {
         tmp.write_all(b"this is not a pdf at all").unwrap();
         let r = is_scan_pdf(tmp.path());
         assert!(r.is_err(), "非 PDF 字节流必须返回 Err");
+    }
+
+    // ─── 多页采样判定（2026-05-25 修订） ───────────────────────────────────
+
+    /// 构造 "z-library 风格" PDF：首页 = 图像封面（无 Font + 仅 Image XObject），
+    /// 后续多页 = 正常文本（有 Font）。
+    ///
+    /// 历史"只看首页"实现会误判为扫描件；多页采样判定应返回 `false`。
+    fn make_zlibrary_style_pdf(num_text_pages: usize) -> NamedTempFile {
+        assert!(num_text_pages >= 1, "至少要有 1 页文本页");
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+
+        // ── 首页：图像封面（无 Font）
+        let cover_image_dict = dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => 1,
+            "Height" => 1,
+            "ColorSpace" => "DeviceGray",
+            "BitsPerComponent" => 8,
+        };
+        let cover_image_id = doc.add_object(Stream::new(cover_image_dict, vec![0u8]));
+        let cover_resources_id = doc.add_object(dictionary! {
+            "XObject" => dictionary! { "ImCover" => cover_image_id },
+        });
+        let cover_content_id = doc.add_object(Stream::new(
+            dictionary! {},
+            Content {
+                operations: vec![Operation::new("Do", vec!["ImCover".into()])],
+            }
+            .encode()
+            .unwrap(),
+        ));
+        let cover_page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "Resources" => cover_resources_id,
+            "Contents" => cover_content_id,
+        });
+
+        // ── 后续文本页（共享一个 Font + Resources）
+        let font_id = doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Helvetica",
+        });
+        let text_resources_id = doc.add_object(dictionary! {
+            "Font" => dictionary! { "F1" => font_id },
+        });
+        let mut kids: Vec<Object> = vec![cover_page_id.into()];
+        for i in 0..num_text_pages {
+            let text_content = Content {
+                operations: vec![
+                    Operation::new("BT", vec![]),
+                    Operation::new("Tf", vec!["F1".into(), 12.into()]),
+                    Operation::new("Td", vec![10.into(), 100.into()]),
+                    Operation::new(
+                        "Tj",
+                        vec![Object::string_literal(format!("page {}", i + 1))],
+                    ),
+                    Operation::new("ET", vec![]),
+                ],
+            };
+            let text_content_id =
+                doc.add_object(Stream::new(dictionary! {}, text_content.encode().unwrap()));
+            let text_page_id = doc.add_object(dictionary! {
+                "Type" => "Page",
+                "Parent" => pages_id,
+                "Resources" => text_resources_id,
+                "Contents" => text_content_id,
+            });
+            kids.push(text_page_id.into());
+        }
+
+        let pages = dictionary! {
+            "Type" => "Pages",
+            "Kids" => kids,
+            "Count" => (1 + num_text_pages) as i64,
+            "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+        };
+        doc.objects.insert(pages_id, Object::Dictionary(pages));
+        let catalog_id = doc.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
+        doc.trailer.set("Root", catalog_id);
+
+        let tmp = NamedTempFile::new().unwrap();
+        let mut doc = doc;
+        doc.save(tmp.path()).unwrap();
+        tmp
+    }
+
+    /// 关键回归测试：z-library 风格 PDF（首页图像封面 + 后续文本页）
+    /// 必须判为**非扫描**（与 2026-05-25 误判 PDF A/B 的真实文件结构一致）。
+    #[test]
+    fn zlibrary_style_pdf_with_image_cover_returns_false() {
+        // 3 页文本（采样会落在第 2 或第 3 页，应命中 Font 引用）
+        let tmp = make_zlibrary_style_pdf(3);
+        assert_eq!(
+            is_scan_pdf(tmp.path()).unwrap(),
+            false,
+            "z-library 风格 PDF（首页图像 + 文本页）不应被误判为扫描件"
+        );
+    }
+
+    /// 末页是文本页 → 必须命中末页采样。
+    #[test]
+    fn zlibrary_style_pdf_two_pages_cover_plus_one_text_returns_false() {
+        let tmp = make_zlibrary_style_pdf(1);
+        assert_eq!(
+            is_scan_pdf(tmp.path()).unwrap(),
+            false,
+            "2 页 PDF：末页有 Font 即视为非扫描"
+        );
+    }
+
+    /// 大量文本页：中间页采样必命中。
+    #[test]
+    fn zlibrary_style_pdf_many_text_pages_returns_false() {
+        let tmp = make_zlibrary_style_pdf(50);
+        assert_eq!(
+            is_scan_pdf(tmp.path()).unwrap(),
+            false,
+            "首页图像 + 50 页文本：中间页采样必命中 Font"
+        );
+    }
+
+    // ─── sample_page_ids 单元测试 ──────────────────────────────────────────
+
+    /// 构造 N 页 BTreeMap 用于测试 `sample_page_ids` 的采样位置。
+    fn fake_pages(n: u32) -> BTreeMap<u32, ObjectId> {
+        let mut m = BTreeMap::new();
+        for i in 1..=n {
+            // ObjectId = (object_number, generation)；用 i 作 object_number 区分
+            m.insert(i, (i as u32, 0));
+        }
+        m
+    }
+
+    #[test]
+    fn sample_page_ids_one_page() {
+        let pages = fake_pages(1);
+        let ids = sample_page_ids(&pages);
+        assert_eq!(ids, vec![(1, 0)], "1 页应只采首页");
+    }
+
+    #[test]
+    fn sample_page_ids_two_pages() {
+        let pages = fake_pages(2);
+        let ids = sample_page_ids(&pages);
+        assert_eq!(ids, vec![(1, 0), (2, 0)], "2 页应采首页 + 末页");
+    }
+
+    #[test]
+    fn sample_page_ids_three_pages() {
+        let pages = fake_pages(3);
+        let ids = sample_page_ids(&pages);
+        // 中间页 = 3/2+1 = 2；最终 [1, 2, 3]
+        assert_eq!(ids, vec![(1, 0), (2, 0), (3, 0)], "3 页采全部");
+    }
+
+    #[test]
+    fn sample_page_ids_large_book() {
+        let pages = fake_pages(412); // 与 PDF B 同页数
+        let ids = sample_page_ids(&pages);
+        // 中间页 = 412/2+1 = 207
+        assert_eq!(
+            ids,
+            vec![(1, 0), (207, 0), (412, 0)],
+            "412 页应采 [首, 中(207), 末]"
+        );
+    }
+
+    #[test]
+    fn sample_page_ids_zero_pages() {
+        let pages: BTreeMap<u32, ObjectId> = BTreeMap::new();
+        let ids = sample_page_ids(&pages);
+        assert!(ids.is_empty(), "空 page tree 返回空 vec");
     }
 }

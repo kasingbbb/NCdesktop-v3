@@ -560,11 +560,16 @@ fn db_get_extract_options(app: &AppHandle) -> Result<ExtractOptions, String> {
     // 路由分支前 short-circuit；markitdown::extract() 入口亦读此字段防御性短路。
     let runtime_check_failed = runtime_check_snapshot_err(app);
 
+    // PDF 用户标记脚本路径（resources/scripts/extract_pdf_annotations.py）。
+    // 找不到时 None → markitdown 跳过 annotation 提取（仅影响 PDF 标记追加，不阻断主转换）。
+    let annotations_script_path = detect_annotations_script_path(app);
+
     Ok(ExtractOptions {
         markitdown_enabled,
         markitdown_python_cmd,
         iflytek_language,
         runtime_check_failed,
+        annotations_script_path,
         ..ExtractOptions::default()
     })
 }
@@ -807,6 +812,30 @@ fn detect_embedded_markitdown_python(app: &AppHandle) -> Option<String> {
         .into_iter()
         .find(|path| path.is_file())
         .map(|path| path.to_string_lossy().to_string())
+}
+
+/// 解析 PDF annotation 提取脚本路径。
+///
+/// 优先级：
+/// 1. bundle 后的 `resource_dir/scripts/extract_pdf_annotations.py`（生产）；
+/// 2. dev 源码树 `src-tauri/resources/scripts/extract_pdf_annotations.py`
+///    （`cargo tauri dev` 下 `resource_dir` 可能未指向源码树，但用户在源码内开发时
+///    会通过 `CARGO_MANIFEST_DIR` 命中此分支）。
+fn detect_annotations_script_path(app: &AppHandle) -> Option<String> {
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(rd) = app.path().resource_dir() {
+        candidates.push(rd.join("scripts/extract_pdf_annotations.py"));
+        // Tauri 在 macOS 下可能把 resources 平铺；保留备选
+        candidates.push(rd.join("resources/scripts/extract_pdf_annotations.py"));
+    }
+    // dev fallback：源码树相对路径（仅当编译期已知）
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    candidates.push(manifest_dir.join("resources/scripts/extract_pdf_annotations.py"));
+
+    candidates
+        .into_iter()
+        .find(|p| p.is_file())
+        .map(|p| p.to_string_lossy().to_string())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

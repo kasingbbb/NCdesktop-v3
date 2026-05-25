@@ -208,11 +208,22 @@ impl Extractor for MarkItDownExtractor {
                     // task_008：用 classify_output 替换历史"exit==0 && stdout==''=成功"误判。
                     match classify_output(&stdout_str, exit_code, elapsed) {
                         Ok(()) => {
-                            let markdown = stdout_str.trim().to_string();
+                            let mut markdown = stdout_str.trim().to_string();
                             // 成功转换路径：首次成功时尝试探测并缓存版本号（best-effort）。
                             if self.cached_version.read().ok().is_none_or(|g| g.is_none()) {
                                 if let Some(ver) = probe_markitdown_version(python_cmd) {
                                     self.cache_version(ver);
+                                }
+                            }
+
+                            // PDF 用户标记追加（仅 application/pdf；失败降级仅 warn）。
+                            // extract_pdf_annotations.py 用同一 python 解释器（已验证可用）
+                            // + pdfplumber（已在 requirements.lock）。
+                            if is_pdf_path(file_path) {
+                                if let Some(section) =
+                                    try_extract_pdf_annotations(python_cmd, file_path, options)
+                                {
+                                    markdown.push_str(&section);
                                 }
                             }
 
@@ -392,6 +403,61 @@ fn probe_markitdown_version(python_cmd: &str) -> Option<String> {
 
 pub fn supports_mime(mime_type: &str) -> bool {
     SUPPORTED_MIME_TYPES.contains(&mime_type)
+}
+
+/// 判断路径扩展名是否为 PDF（用于决定是否触发 annotation 追加）。
+fn is_pdf_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("pdf"))
+        .unwrap_or(false)
+}
+
+/// 调用 PDF 标记提取脚本并把结果格式化为 MD 章节；失败仅 warn，返回 None。
+///
+/// - 若 `options.annotations_script_path` 未注入（dev 环境忘了配 / 资源缺失）→ 跳过；
+/// - 子进程错误 / 超时 / JSON 解析失败 → 仅 log warn；不影响主转换结果。
+fn try_extract_pdf_annotations(
+    python_cmd: &str,
+    pdf_path: &Path,
+    options: &ExtractOptions,
+) -> Option<String> {
+    let Some(script_path) = options
+        .annotations_script_path
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    else {
+        // 脚本路径未注入，跳过（不算失败）
+        return None;
+    };
+    let script_path = Path::new(script_path);
+    if !script_path.exists() {
+        log::warn!(
+            "PDF annotations 脚本不存在，跳过 annotation 提取: {}",
+            script_path.display()
+        );
+        return None;
+    }
+
+    match crate::extraction::pdf_annotations::extract_annotations(python_cmd, script_path, pdf_path)
+    {
+        Ok(annotations) => {
+            log::info!(
+                "PDF annotations 提取成功：{} 处（{}）",
+                annotations.len(),
+                pdf_path.display()
+            );
+            crate::extraction::pdf_annotations::format_annotations_section(&annotations)
+        }
+        Err(e) => {
+            log::warn!(
+                "PDF annotations 提取失败（继续主转换）: {}: {e}",
+                pdf_path.display()
+            );
+            None
+        }
+    }
 }
 
 fn python_candidates(options: &ExtractOptions) -> Vec<String> {
