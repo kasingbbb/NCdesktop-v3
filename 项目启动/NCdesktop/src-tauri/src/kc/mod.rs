@@ -33,6 +33,7 @@ pub mod client; // task_007 实装
 pub mod defense; // task_014 实装
 pub mod enrichment; // task_011 实装
 pub mod errors; // 本 task 实装基础类型
+pub mod frontmatter; // task_013 实装：KC frontmatter writer（YAML 序列化 + 转义）
 pub mod process; // task_008 实装
 pub mod settings; // task_004 / task_010 实装
 
