@@ -9,6 +9,7 @@ import { ExtractionBadge } from "../features/extraction/ExtractionBadge";
 import { FrontmatterSummaryView } from "../features/extraction/FrontmatterSummaryView";
 import { FrontmatterTagsView } from "../features/extraction/FrontmatterTagsView";
 import { parseFrontmatter } from "../../utils/parseFrontmatter";
+import { mapKcEnrichedToLabel } from "../../utils/kcEnrichedLabel";
 import type { ExtractionStatus } from "../../types/extraction";
 
 interface InspectorExtractionProps {
@@ -58,32 +59,6 @@ function formatConversionMs(ms: number | null | undefined): string {
   if (ms === null || ms === undefined) return "—";
   if (ms > 1000) return `${(ms / 1000).toFixed(1)}s`;
   return `${ms} ms`;
-}
-
-/**
- * task_018 AC-2 / AC-6 (TD-4)：kc_enriched 字面 → 用户可见文案。
- *
- * **翻译层归属说明**：此翻译层故意落在 InspectorExtraction.tsx（业务表层），
- * 而非 KcStatusBadge（task_021 / 视觉徽章）。两者职责分离：
- * - KcStatusBadge 只关心 UX 状态 "success"/"failed"/"loading"/"idle"（task_021），
- *   与底层 YAML 字面 "true"/"partial"/"false" 解耦，便于未来调度态 / 队列态复用。
- * - 这里的 `kcEnrichedLabel` 负责"DB 字面值 → 用户中文文案"映射，
- *   是 Inspector 业务展示的本地翻译，不应被 KcStatusBadge 吞掉。
- *
- * 返回 null 表示"该行不渲染"（历史数据 kc_enriched = null）。
- */
-function kcEnrichedLabel(kcEnriched: string | null | undefined): string | null {
-  switch (kcEnriched) {
-    case "true":
-      return "AI 增强：完整";
-    case "partial":
-      return "AI 增强：仅规则标签（LLM 不可用）";
-    case "false":
-      return "未启用 AI 增强";
-    default:
-      // null / undefined / 任何未识别字面 —— 历史数据或脏数据，整行不显示
-      return null;
-  }
 }
 
 export function InspectorExtraction({ asset }: InspectorExtractionProps) {
@@ -328,16 +303,18 @@ export function InspectorExtraction({ asset }: InspectorExtractionProps) {
                 </p>
               )}
               {(() => {
-                // task_018 AC-2：kc_enriched 字面映射 → 用户文案。null → 不渲染该行（历史数据）。
-                const kcLabel = kcEnrichedLabel(content.kcEnriched);
-                if (kcLabel === null) return null;
+                // task_018 AC-2 / task_019 TD-4：kc_enriched 字面映射 → 用户文案。
+                // null → 不渲染该行（历史数据）。translation 由 shared helper 提供，
+                // 保证 InspectorExtraction 与 DocumentViewer 文案一致。
+                const kcMapped = mapKcEnrichedToLabel(content.kcEnriched);
+                if (kcMapped === null) return null;
                 return (
                   <p
                     className="text-[10px]"
                     style={{ color: "var(--text-tertiary)" }}
                     data-testid="kc-enriched-label"
                   >
-                    {kcLabel}
+                    {kcMapped.label}
                   </p>
                 );
               })()}
