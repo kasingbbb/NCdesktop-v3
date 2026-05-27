@@ -1421,7 +1421,7 @@ fn kc_persist_resolved_with_conn(
                 // failure_code（如有）：复用 task_008 的"最近一行" UPDATE 语义，
                 // 把刚 insert 的这行 KC conversion_meta 标记上 E_KC_*。
                 if let Some(fc) = resolved.failure_code_for_meta {
-                    if let Some(code) = parse_failure_code(fc) {
+                    if let Some(code) = db_conv_meta::parse_failure_code(fc) {
                         if let Err(e) = db_conv_meta::update_failure_code(conn, asset_id, Some(code)) {
                             log::warn!(
                                 "KC 注入：写 conversion_meta.failure_code 失败 asset={asset_id} code={fc}: {e}"
@@ -1438,21 +1438,6 @@ fn kc_persist_resolved_with_conn(
                 "KC 注入：追加 conversion_meta KC 行失败 asset={asset_id}: {e}"
             ),
         }
-    }
-}
-
-/// 把 `&str` failure_code（如 `"E_KC_UNAVAILABLE"`）反查为 `FailureCode` enum。
-///
-/// 仅识别 5 个 KC 字面 + 8 个 markitdown 字面；其它字符串返回 `None`（让调用方 `log::warn`
-/// 而非 panic / 静默吞）。
-fn parse_failure_code(s: &str) -> Option<FailureCode> {
-    match s {
-        "E_KC_UNAVAILABLE" => Some(FailureCode::EKcUnavailable),
-        "E_KC_ENRICH_FAILED" => Some(FailureCode::EKcEnrichFailed),
-        "E_KC_LLM_UNAVAILABLE" => Some(FailureCode::EKcLlmUnavailable),
-        "E_KC_TIMEOUT" => Some(FailureCode::EKcTimeout),
-        "E_KC_INPUT_TOO_LARGE" => Some(FailureCode::EKcInputTooLarge),
-        _ => None,
     }
 }
 
@@ -2039,10 +2024,16 @@ mod tests {
         // 这是结构性的（编译时分支隔离），无需运行时再 assert "DB 没动"。
     }
 
-    /// 守护：scheduler 本地 `parse_failure_code` 必须识别全部 5 个 KC 字面（task_011 ADR-004 映射），
+    /// 守护：canonical `parse_failure_code` 必须识别全部 5 个 KC 字面（task_011 ADR-004 映射），
     /// 不识别才能让 `kc_persist_resolved_with_conn` `log::warn` 而非 panic / 静默吞。
+    ///
+    /// **task_015b（关 TD-3）**：本测试原本守护 scheduler-local mini-parser；
+    /// task_015b 删了 mini-parser、把守护迁到 `db::conversion_meta::parse_failure_code`
+    /// canonical 一侧。本地保留这份测试作"调用 path"守护——确保 scheduler 仍指向
+    /// canonical（而非未来某次回退又复制一份 mini-parser）。
     #[test]
     fn parse_failure_code_recognises_all_five_kc_variants() {
+        use crate::db::conversion_meta::parse_failure_code;
         assert!(matches!(
             parse_failure_code("E_KC_UNAVAILABLE"),
             Some(FailureCode::EKcUnavailable)

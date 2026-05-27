@@ -257,10 +257,16 @@ pub enum ConversionState {
 
 /// 将 `conversion_meta.failure_code` 字符串字面映射为 [`FailureCode`] 枚举。
 ///
-/// `legacy_unverified` **不**在 8 枚举中（PRD R-④"老用户感知不退步"），
+/// `legacy_unverified` **不**在 13 枚举中（PRD R-④"老用户感知不退步"），
 /// 因此本函数对它返回 `None`，由调用方按 `LegacyUnverified` 单独分支处理。
 /// 未知字符串（理论上不应出现）同样返回 `None`，由调用方决定容错策略。
-fn parse_failure_code(code: &str) -> Option<FailureCode> {
+///
+/// **task_015b（关 TD-3）**：此函数是 8 markitdown + 5 KC 共 13 个失败码字面的
+/// **canonical / 单源** parser；scheduler.rs::kc_persist_resolved_with_conn 复用本函数
+/// 而非自己维护 mini-parser。字面与 [`FailureCode::as_str`] 严格 round-trip，
+/// 由 [`parse_failure_code_recognises_all_five_kc_variants`] +
+/// [`parse_failure_code_round_trips_all_thirteen_variants`] 双重守护。
+pub(crate) fn parse_failure_code(code: &str) -> Option<FailureCode> {
     match code {
         "E_RUNTIME_MISSING" => Some(FailureCode::ERuntimeMissing),
         "E_EXTRA_MISSING_EPUB" => Some(FailureCode::EExtraMissingEpub),
@@ -270,6 +276,13 @@ fn parse_failure_code(code: &str) -> Option<FailureCode> {
         "E_OUTPUT_GIBBERISH" => Some(FailureCode::EOutputGibberish),
         "E_OUTPUT_NO_STRUCTURE" => Some(FailureCode::EOutputNoStructure),
         "E_TIMEOUT_90S" => Some(FailureCode::ETimeout90s),
+        // task_015b：补全 5 KC 字面（task_003 task_011 ADR-004 映射）。
+        // 字面与 FailureCode::EKc*.as_str() 严格 round-trip，守护测试见 mod tests。
+        "E_KC_UNAVAILABLE" => Some(FailureCode::EKcUnavailable),
+        "E_KC_ENRICH_FAILED" => Some(FailureCode::EKcEnrichFailed),
+        "E_KC_LLM_UNAVAILABLE" => Some(FailureCode::EKcLlmUnavailable),
+        "E_KC_TIMEOUT" => Some(FailureCode::EKcTimeout),
+        "E_KC_INPUT_TOO_LARGE" => Some(FailureCode::EKcInputTooLarge),
         _ => None,
     }
 }
@@ -726,6 +739,59 @@ mod tests {
             .expect("read meta");
         assert_eq!(cn, "kc_enrichment");
         assert_eq!(source, "src1");
+    }
+
+    // ===== task_015b AC-5：parse_failure_code 5 KC 守护 + 13 字面 round-trip =====
+
+    /// task_015b：canonical `parse_failure_code` 必须识别全部 5 个 KC 字面
+    /// （task_003 ADR-004 映射），与 [`FailureCode::EKc*::as_str()`] 严格 round-trip。
+    /// 历史上此函数仅含 8 markitdown 字面，task_012 在 scheduler.rs 中维护过
+    /// workaround 副本（TD-3）—— task_015b 已删除并把守护迁回 canonical 一侧。
+    #[test]
+    fn parse_failure_code_recognises_all_five_kc_variants() {
+        // 直接调 FailureCode::*.as_str() 取字面（避免硬编码字符串再次"双源"）
+        for code in [
+            FailureCode::EKcUnavailable,
+            FailureCode::EKcEnrichFailed,
+            FailureCode::EKcLlmUnavailable,
+            FailureCode::EKcTimeout,
+            FailureCode::EKcInputTooLarge,
+        ] {
+            let s = code.as_str();
+            let parsed = parse_failure_code(s);
+            assert_eq!(
+                parsed,
+                Some(code),
+                "round-trip failed for {s}: as_str() → parse_failure_code() 必须还原同一枚举"
+            );
+        }
+        // 未知字面：保留 None 语义（调用方按 LegacyUnverified 兜底）
+        assert!(parse_failure_code("E_BOGUS_UNKNOWN").is_none());
+        assert!(parse_failure_code("legacy_unverified").is_none());
+    }
+
+    /// task_015b 额外守护：13 个失败码字面（8 markitdown + 5 KC）全部 round-trip。
+    /// 若未来 `FailureCode` 新增变体而忘记同步 parser，此测试会因 as_str() 落入 `None`
+    /// 而 fail —— 作为 canonical parser 的"覆盖完整性"哨兵。
+    #[test]
+    fn parse_failure_code_round_trips_all_thirteen_variants() {
+        for code in [
+            FailureCode::ERuntimeMissing,
+            FailureCode::EExtraMissingEpub,
+            FailureCode::EScanPdfUnsupported,
+            FailureCode::EAudioWrongRoute,
+            FailureCode::EOutputEmpty,
+            FailureCode::EOutputGibberish,
+            FailureCode::EOutputNoStructure,
+            FailureCode::ETimeout90s,
+            FailureCode::EKcUnavailable,
+            FailureCode::EKcEnrichFailed,
+            FailureCode::EKcLlmUnavailable,
+            FailureCode::EKcTimeout,
+            FailureCode::EKcInputTooLarge,
+        ] {
+            assert_eq!(parse_failure_code(code.as_str()), Some(code));
+        }
     }
 
     /// task_015：u64 超 i64::MAX 时 saturating-cast 到 i64::MAX，不应 panic。
