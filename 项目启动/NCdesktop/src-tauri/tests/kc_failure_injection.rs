@@ -57,15 +57,13 @@ use std::time::Duration;
 
 use rusqlite::{params, Connection};
 
-use app_lib::db::conversion_meta::{db_conversion_meta_kc_insert, update_failure_code};
-use app_lib::db::extraction::{
-    db_update_kc_fields, get_extracted_content, upsert_extraction_result,
-};
+use app_lib::db::extraction::{get_extracted_content, upsert_extraction_result};
 use app_lib::db::migration::run_migrations;
 use app_lib::extraction::failure_code::FailureCode;
 use app_lib::extraction::models::ExtractionResult;
+use app_lib::extraction::scheduler::kc_persist_resolved_with_conn;
 use app_lib::kc::client::{KcClient, KcIngestOptions};
-use app_lib::kc::enrichment::{resolve_outcome, ResolvedEnrichment};
+use app_lib::kc::enrichment::resolve_outcome;
 use app_lib::kc::errors::{KcCallError, KcEnrichmentOutcome, KcFallbackReason, KcMeta, KcTagsSource};
 use app_lib::kc::process::PortProvider;
 
@@ -212,85 +210,6 @@ fn setup_db_with_markitdown_extracted(asset_id: &str) -> Connection {
     conn
 }
 
-/// 模拟 `scheduler::kc_persist_resolved_with_conn` 的 DB 写入序列：
-/// 1. `db_update_kc_fields` — 写 `extracted_content.kc_enriched / kc_version / kc_tags_source`；
-/// 2. 仅当 `kc_meta_for_db.is_some() || failure_code_for_meta.is_some()` 时 append KC
-///    `conversion_meta` 行；
-/// 3. failure_code（如有）通过 `update_failure_code` 标到刚 insert 的 KC `conversion_meta` 行。
-///
-/// 注意：本函数与 `scheduler.rs` 内 `kc_persist_resolved_with_conn` **行为等价**——
-/// scheduler 内部该函数是 `fn`（非 `pub`），integration test 不能直接调，故本测试复刻其
-/// 公开 helper 调用序列。任何 scheduler 内部行为变化必须同步更新本函数。
-fn simulate_scheduler_kc_persist(
-    conn: &Connection,
-    asset_id: &str,
-    mime_type: &str,
-    source_hash: &str,
-    resolved: &ResolvedEnrichment,
-) {
-    let kc_version_str = resolved.kc_meta_for_db.as_ref().map(|m| m.kc_version.as_str());
-    let kc_tags_source_str = resolved.kc_meta_for_db.as_ref().map(|m| m.tags_source.as_str());
-
-    db_update_kc_fields(
-        conn,
-        asset_id,
-        &resolved.kc_enriched,
-        kc_version_str,
-        kc_tags_source_str,
-    )
-    .expect("db_update_kc_fields");
-
-    // KC 真正介入（有 meta 或有 failure_code）时才 append conversion_meta 行
-    if resolved.kc_meta_for_db.is_some() || resolved.failure_code_for_meta.is_some() {
-        let kc_doc_id = resolved.kc_meta_for_db.as_ref().map(|m| m.doc_id.as_str());
-        let kc_response_size = resolved
-            .kc_meta_for_db
-            .as_ref()
-            .map(|m| m.response_size_bytes as u64);
-        let kc_duration_ms = resolved.kc_meta_for_db.as_ref().map(|m| m.duration_ms);
-        let kc_version = resolved
-            .kc_meta_for_db
-            .as_ref()
-            .map(|m| m.kc_version.as_str())
-            .unwrap_or("");
-
-        db_conversion_meta_kc_insert(
-            conn,
-            asset_id,
-            "kc_enrichment",
-            kc_version,
-            mime_type,
-            source_hash,
-            0,
-            kc_doc_id,
-            kc_response_size,
-            kc_duration_ms,
-        )
-        .expect("db_conversion_meta_kc_insert");
-
-        // failure_code（如有）：标到刚 insert 的最近一行 KC conversion_meta
-        if let Some(fc) = resolved.failure_code_for_meta {
-            let code = failure_code_from_str(fc);
-            update_failure_code(conn, asset_id, Some(code))
-                .expect("update_failure_code");
-        }
-    }
-}
-
-/// 把 `&'static str`（resolve_outcome 返回的字面）反查回 `FailureCode` 枚举。
-/// 严格依赖 task_003 `FailureCode::EKc*.as_str()` 的 5 个字面值；任何漂移都会被
-/// `assert_eq!(failure_code_for_meta, Some(FailureCode::EKc*.as_str()))` 守护。
-fn failure_code_from_str(s: &str) -> FailureCode {
-    match s {
-        "E_KC_UNAVAILABLE" => FailureCode::EKcUnavailable,
-        "E_KC_ENRICH_FAILED" => FailureCode::EKcEnrichFailed,
-        "E_KC_LLM_UNAVAILABLE" => FailureCode::EKcLlmUnavailable,
-        "E_KC_TIMEOUT" => FailureCode::EKcTimeout,
-        "E_KC_INPUT_TOO_LARGE" => FailureCode::EKcInputTooLarge,
-        other => panic!("unexpected KC failure_code string in test: {other}"),
-    }
-}
-
 /// 共用断言：每个失败注入测试结束后必须满足的"PRD 不可妥协底线 #2 + failure_code 守护"。
 fn assert_db_invariants_post_kc_failure(
     conn: &Connection,
@@ -382,7 +301,7 @@ async fn failure_a_unavailable_falls_back_to_markitdown_md() {
 
     // 5. DB 写入并断言不可妥协底线 #2
     let conn = setup_db_with_markitdown_extracted(asset_id);
-    simulate_scheduler_kc_persist(&conn, asset_id, "application/pdf", "h-a", &resolved);
+    kc_persist_resolved_with_conn(&conn, asset_id, "application/pdf", "h-a", &resolved);
     assert_db_invariants_post_kc_failure(
         &conn,
         asset_id,
@@ -442,7 +361,7 @@ async fn failure_d_timeout_falls_back_to_markitdown_md() {
 
     // 5. DB
     let conn = setup_db_with_markitdown_extracted(asset_id);
-    simulate_scheduler_kc_persist(&conn, asset_id, "application/pdf", "h-d", &resolved);
+    kc_persist_resolved_with_conn(&conn, asset_id, "application/pdf", "h-d", &resolved);
     assert_db_invariants_post_kc_failure(&conn, asset_id, "false", FailureCode::EKcTimeout);
 
     mock.stop();
@@ -489,7 +408,7 @@ async fn failure_b_internal_error_falls_back_with_failure_code() {
     assert_eq!(resolved.final_md, raw.structured_md);
 
     let conn = setup_db_with_markitdown_extracted(asset_id);
-    simulate_scheduler_kc_persist(&conn, asset_id, "application/pdf", "h-b", &resolved);
+    kc_persist_resolved_with_conn(&conn, asset_id, "application/pdf", "h-b", &resolved);
     assert_db_invariants_post_kc_failure(
         &conn,
         asset_id,
@@ -567,7 +486,7 @@ async fn failure_c_llm_unavailable_partial_writes_rule_only_md() {
 
     // DB：注意 kc_enriched='partial' 也是 task_022 的关键断言
     let conn = setup_db_with_markitdown_extracted(asset_id);
-    simulate_scheduler_kc_persist(&conn, asset_id, "application/pdf", "h-c", &resolved);
+    kc_persist_resolved_with_conn(&conn, asset_id, "application/pdf", "h-c", &resolved);
     assert_db_invariants_post_kc_failure(
         &conn,
         asset_id,
@@ -636,7 +555,7 @@ async fn failure_e_input_too_large_falls_back() {
     assert_eq!(resolved.final_md, raw.structured_md);
 
     let conn = setup_db_with_markitdown_extracted(asset_id);
-    simulate_scheduler_kc_persist(&conn, asset_id, "application/pdf", "h-e", &resolved);
+    kc_persist_resolved_with_conn(&conn, asset_id, "application/pdf", "h-e", &resolved);
     assert_db_invariants_post_kc_failure(
         &conn,
         asset_id,

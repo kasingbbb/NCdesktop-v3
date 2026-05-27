@@ -1369,7 +1369,13 @@ fn kc_persist_resolved(
 ///    `update_failure_code` 的"最近一行"语义）。
 ///
 /// **失败仅 `log::warn`**，不向上抛——KC 注入不阻断主链路（PRD §4.3）。
-fn kc_persist_resolved_with_conn(
+///
+/// task_027b：可见性升级为 `pub` 以消除 task_022/023/024 三处 integration test 字面复刻
+/// （Reviewer DRY follow-up）。integration test crate 是 **external crate**——`pub(crate)`
+/// 不可见，必须 `pub` 才能 `use app_lib::extraction::scheduler::kc_persist_resolved_with_conn`；
+/// `#[doc(hidden)]` 标注表明它是测试基础设施，**生产代码请走 `save_and_materialize`**。
+#[doc(hidden)]
+pub fn kc_persist_resolved_with_conn(
     conn: &rusqlite::Connection,
     asset_id: &str,
     mime_type: &str,

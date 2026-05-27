@@ -53,11 +53,11 @@ use std::sync::Arc;
 use app_lib::db::conversion_meta as db_conv_meta;
 use app_lib::db::extraction as db_ext;
 use app_lib::db::migration::run_migrations;
-use app_lib::extraction::failure_code::FailureCode;
 use app_lib::extraction::models::ExtractionResult;
+use app_lib::extraction::scheduler::kc_persist_resolved_with_conn;
 use app_lib::kc::client::{KcClient, KcIngestOptions, KcIngestOutcome};
-use app_lib::kc::enrichment::{resolve_outcome, ResolvedEnrichment};
-use app_lib::kc::errors::{KcEnrichmentOutcome, KcFallbackReason, KcMeta, KcTagsSource};
+use app_lib::kc::enrichment::resolve_outcome;
+use app_lib::kc::errors::{KcEnrichmentOutcome, KcFallbackReason};
 use app_lib::kc::frontmatter::build_kc_frontmatter;
 use app_lib::kc::process::PortProvider;
 use app_lib::models::Asset;
@@ -165,92 +165,6 @@ fn make_markitdown_extraction(structured_md: &str) -> ExtractionResult {
     }
 }
 
-/// 同义于 scheduler.rs::kc_persist_resolved_with_conn（私有不可见，本测试复刻 DB 写入逻辑）。
-///
-/// 行为严格与原函数一致（task_012 AC-4 验证过）：
-/// 1. `db_update_kc_fields` 写 extracted_content 三列（kc_enriched / kc_version / kc_tags_source）；
-/// 2. 仅当 `kc_meta_for_db` 或 `failure_code_for_meta` 任一非空时，追加一行 KC `conversion_meta`；
-/// 3. 若有 `failure_code_for_meta`，UPDATE 最近一行 `conversion_meta.failure_code`。
-fn persist_resolved_to_db(
-    conn: &Connection,
-    asset_id: &str,
-    mime: &str,
-    source_hash: &str,
-    resolved: &ResolvedEnrichment,
-) {
-    let kc_version_str = resolved
-        .kc_meta_for_db
-        .as_ref()
-        .map(|m| m.kc_version.as_str());
-    let kc_tags_source_str = resolved
-        .kc_meta_for_db
-        .as_ref()
-        .map(|m| m.tags_source.as_str());
-
-    db_ext::db_update_kc_fields(
-        conn,
-        asset_id,
-        &resolved.kc_enriched,
-        kc_version_str,
-        kc_tags_source_str,
-    )
-    .expect("update kc fields");
-
-    if resolved.kc_meta_for_db.is_some() || resolved.failure_code_for_meta.is_some() {
-        let kc_doc_id = resolved.kc_meta_for_db.as_ref().map(|m| m.doc_id.as_str());
-        let kc_response_size = resolved
-            .kc_meta_for_db
-            .as_ref()
-            .map(|m| m.response_size_bytes as u64);
-        let kc_duration_ms = resolved.kc_meta_for_db.as_ref().map(|m| m.duration_ms);
-        let kc_version = resolved
-            .kc_meta_for_db
-            .as_ref()
-            .map(|m| m.kc_version.as_str())
-            .unwrap_or("");
-
-        db_conv_meta::db_conversion_meta_kc_insert(
-            conn,
-            asset_id,
-            "kc_enrichment",
-            kc_version,
-            mime,
-            source_hash,
-            0,
-            kc_doc_id,
-            kc_response_size,
-            kc_duration_ms,
-        )
-        .expect("insert kc conversion_meta");
-
-        if let Some(fc) = resolved.failure_code_for_meta {
-            // failure_code 字面 → FailureCode 枚举（parse_failure_code 是 pub(crate)，
-            // 这里走 FailureCode::as_str 反查（5 KC 字面）实现等价映射）。
-            let parsed = parse_kc_failure_code(fc);
-            if let Some(code) = parsed {
-                db_conv_meta::update_failure_code(conn, asset_id, Some(code))
-                    .expect("update failure_code");
-            }
-        }
-    }
-}
-
-/// 测试侧 parser：5 KC failure_code 字面 → FailureCode 枚举（用于 update_failure_code 调用）。
-///
-/// 与 `db::conversion_meta::parse_failure_code`（lib `pub(crate)`，integration test 不可见）
-/// **字面严格 round-trip**（task_015b 守护测试 `parse_failure_code_recognises_all_five_kc_variants`
-/// 保证 lib 内 canonical 不漂移；本测试仅覆盖 KC 5 个字面，markitdown 8 个不在 e2e 路径）。
-fn parse_kc_failure_code(code: &str) -> Option<FailureCode> {
-    match code {
-        "E_KC_UNAVAILABLE" => Some(FailureCode::EKcUnavailable),
-        "E_KC_ENRICH_FAILED" => Some(FailureCode::EKcEnrichFailed),
-        "E_KC_LLM_UNAVAILABLE" => Some(FailureCode::EKcLlmUnavailable),
-        "E_KC_TIMEOUT" => Some(FailureCode::EKcTimeout),
-        "E_KC_INPUT_TOO_LARGE" => Some(FailureCode::EKcInputTooLarge),
-        _ => None,
-    }
-}
-
 /// 模拟 `materialize_md` 的最后一步——写 derivative .md 到工作区目录。
 ///
 /// 真路径 `write_derivative_md` 包含工作区目录创建 + 归档旧版本 + DB 版本号推进，
@@ -311,7 +225,7 @@ async fn e2e_drag_pdf_to_kc_enriched_md() {
     );
 
     // 真 DB 写入（用同义 helper）
-    persist_resolved_to_db(&conn, asset_id, mime, "sha-fake", &resolved);
+    kc_persist_resolved_with_conn(&conn, asset_id, mime, "sha-fake", &resolved);
 
     // === 断言 1：.md 已落盘 + frontmatter 含 ai_tags + ai_summary ===
     assert!(md_path.exists(), ".md 文件必须落盘");
@@ -470,7 +384,7 @@ async fn e2e_drag_with_kc_disabled_falls_through() {
     );
 
     // 真 DB 写入
-    persist_resolved_to_db(&conn, asset_id, mime, "sha-disabled", &resolved);
+    kc_persist_resolved_with_conn(&conn, asset_id, mime, "sha-disabled", &resolved);
 
     // === 断言 1：.md 是 markitdown 原版（无 frontmatter）===
     let written = std::fs::read_to_string(&md_path).expect("read back");
@@ -543,7 +457,7 @@ async fn e2e_retrigger_re_enriches_with_force_kc_refresh() {
     let resolved1 = resolve_outcome(&raw, outcome1, |meta| {
         build_kc_frontmatter(&asset, &raw, meta)
     });
-    persist_resolved_to_db(&conn, asset_id, mime, "sha-v1", &resolved1);
+    kc_persist_resolved_with_conn(&conn, asset_id, mime, "sha-v1", &resolved1);
 
     let row1 = db_ext::db_read_kc_status(&conn, asset_id)
         .expect("read")
@@ -602,7 +516,7 @@ async fn e2e_retrigger_re_enriches_with_force_kc_refresh() {
         "重新增强后不应保留 v1 内容"
     );
 
-    persist_resolved_to_db(&conn, asset_id, mime, "sha-v2", &resolved2);
+    kc_persist_resolved_with_conn(&conn, asset_id, mime, "sha-v2", &resolved2);
 
     // === 断言：extracted_content.kc_version 必须 = "1.0"（UPDATE 覆盖）===
     let row2 = db_ext::db_read_kc_status(&conn, asset_id)
@@ -629,47 +543,7 @@ async fn e2e_retrigger_re_enriches_with_force_kc_refresh() {
     mock2.stop();
 }
 
-// =====================================================================
-// 辅助测试：守护"persist_resolved_to_db helper 与 lib 内 kc_persist_resolved_with_conn
-// DB 写入语义等价"——保护 e2e 测试在未来 lib 内逻辑迁移时不发生 drift。
-// =====================================================================
-
-/// 守护：本测试侧 `persist_resolved_to_db` 处理 Success 的副作用必须与 lib 内
-/// `kc_persist_resolved_with_conn`（scheduler 单测 `save_and_materialize_with_kc_success_writes_enhanced_md`
-/// 验证过的形态）严格一致——即"调它一次 → DB 行变化与单测断言完全一致"。
-#[test]
-fn persist_helper_matches_kc_persist_resolved_with_conn_for_success() {
-    let asset_id = "asset-guard-success";
-    let conn = setup_db_with_asset(asset_id, "application/pdf");
-    let meta = KcMeta {
-        doc_id: "doc-guard".to_string(),
-        kc_version: "0.9".to_string(),
-        tags_source: KcTagsSource::AiAndRule,
-        ai_tags: vec!["t".to_string()],
-        rule_tags: vec!["r".to_string()],
-        ai_summary: Some("s".to_string()),
-        ai_qa_pairs: Vec::new(),
-        ai_paragraph_links: Vec::new(),
-        generated_at: "2026-05-27T00:00:00Z".to_string(),
-        paragraph_count: 3,
-        response_size_bytes: 1024,
-        duration_ms: 100,
-    };
-    let resolved = ResolvedEnrichment {
-        final_md: "---\nstub\n---\n\n# body".to_string(),
-        extractor_type: "markitdown+kc".to_string(),
-        kc_enriched: "true".to_string(),
-        kc_meta_for_db: Some(meta),
-        failure_code_for_meta: None,
-    };
-
-    persist_resolved_to_db(&conn, asset_id, "application/pdf", "sha", &resolved);
-
-    let row = db_ext::db_read_kc_status(&conn, asset_id).unwrap().unwrap();
-    assert_eq!(row.kc_enriched.as_deref(), Some("true"));
-    assert_eq!(row.kc_version.as_deref(), Some("0.9"));
-    assert_eq!(row.kc_tags_source.as_deref(), Some("ai+rule"));
-    let rows = db_conv_meta::list_by_source(&conn, asset_id).unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].converter_name, "kc_enrichment");
-}
+// task_027b：原 `persist_helper_matches_kc_persist_resolved_with_conn_for_success` guard
+// 已删除——helper 已单源化为 `kc_persist_resolved_with_conn`（scheduler.rs `pub fn`，
+// `#[doc(hidden)]` 标注），无 drift 可能。e2e 测试现直接调 canonical fn，由 lib 内
+// `save_and_materialize_with_kc_success_writes_enhanced_md` 单测继续守护 DB 写入语义。

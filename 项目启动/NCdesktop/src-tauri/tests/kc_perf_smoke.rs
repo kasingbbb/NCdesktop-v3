@@ -72,12 +72,12 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use app_lib::db::conversion_meta as db_conv_meta;
 use app_lib::db::extraction as db_ext;
 use app_lib::db::migration::run_migrations;
 use app_lib::extraction::models::ExtractionResult;
+use app_lib::extraction::scheduler::kc_persist_resolved_with_conn;
 use app_lib::kc::client::{KcClient, KcIngestOptions, KcIngestOutcome};
-use app_lib::kc::enrichment::{resolve_outcome, ResolvedEnrichment};
+use app_lib::kc::enrichment::resolve_outcome;
 use app_lib::kc::errors::{KcEnrichmentOutcome, KcMeta, KcTagsSource};
 use app_lib::kc::frontmatter::build_kc_frontmatter;
 use app_lib::kc::process::PortProvider;
@@ -264,70 +264,9 @@ fn make_extraction_result(md: &str) -> ExtractionResult {
     }
 }
 
-/// 复刻 scheduler.rs::kc_persist_resolved_with_conn 的 DB 写入路径（该函数私有，无法
-/// 直接 import；下面字面与 src/extraction/scheduler.rs:1372 同步）。
-fn persist_resolved_to_db(
-    conn: &rusqlite::Connection,
-    asset_id: &str,
-    mime_type: &str,
-    source_hash: &str,
-    resolved: &ResolvedEnrichment,
-) {
-    let kc_version_str = resolved
-        .kc_meta_for_db
-        .as_ref()
-        .map(|m| m.kc_version.as_str());
-    let kc_tags_source_str = resolved
-        .kc_meta_for_db
-        .as_ref()
-        .map(|m| m.tags_source.as_str());
-
-    db_ext::db_update_kc_fields(
-        conn,
-        asset_id,
-        &resolved.kc_enriched,
-        kc_version_str,
-        kc_tags_source_str,
-    )
-    .expect("db_update_kc_fields ok");
-
-    if resolved.kc_meta_for_db.is_some() || resolved.failure_code_for_meta.is_some() {
-        let kc_doc_id = resolved.kc_meta_for_db.as_ref().map(|m| m.doc_id.as_str());
-        let kc_response_size = resolved
-            .kc_meta_for_db
-            .as_ref()
-            .map(|m| m.response_size_bytes as u64);
-        let kc_duration_ms = resolved.kc_meta_for_db.as_ref().map(|m| m.duration_ms);
-        let kc_version = resolved
-            .kc_meta_for_db
-            .as_ref()
-            .map(|m| m.kc_version.as_str())
-            .unwrap_or("");
-        db_conv_meta::db_conversion_meta_kc_insert(
-            conn,
-            asset_id,
-            "kc_enrichment",
-            kc_version,
-            mime_type,
-            source_hash,
-            0,
-            kc_doc_id,
-            kc_response_size,
-            kc_duration_ms,
-        )
-        .expect("kc_insert ok");
-
-        // 注：scheduler.rs::kc_persist_resolved_with_conn 此处会 parse failure_code 字面
-        // 并 UPDATE conversion_meta.failure_code。本 bench 只跑 Success 路径
-        // （failure_code_for_meta=None），故此分支不会被进入；不复刻 parse_failure_code
-        // 调用（pub(crate) 私有，bench 不依赖）。
-        debug_assert!(
-            resolved.failure_code_for_meta.is_none(),
-            "bench 路径只跑 Success（failure_code 应为 None），实际 {:?}",
-            resolved.failure_code_for_meta
-        );
-    }
-}
+// task_027b：原 `persist_resolved_to_db` helper 已删除——bench 现直接调
+// `app_lib::extraction::scheduler::kc_persist_resolved_with_conn`（canonical，
+// scheduler.rs `pub fn` + `#[doc(hidden)]`），消除 DRY 复刻漂移隐患。
 
 // =====================================================================
 // JSON 输出（target/bench_results.json）
@@ -429,7 +368,7 @@ async fn bench_kc_ingest_10kb_inner() -> Percentiles {
 /// **链路构造**（与 scheduler.rs::save_and_materialize KC 注入分支字面对齐）：
 /// 1. `KcClient::ingest_text`（mock success）→ Outcome::Success；
 /// 2. `kc::enrichment::resolve_outcome` + `build_kc_frontmatter` writer → ResolvedEnrichment；
-/// 3. `persist_resolved_to_db`（复刻 scheduler 私有 `kc_persist_resolved_with_conn`）：
+/// 3. `kc_persist_resolved_with_conn`（task_027b 单源化的 canonical 由 scheduler.rs 直接暴露）：
 ///    `db_update_kc_fields` + `db_conversion_meta_kc_insert` + `update_failure_code`。
 ///
 /// 不含磁盘 .md 写盘（input.md 列了"落地 .md"但磁盘写盘是 mem-mapped fs cache 主导，
@@ -460,7 +399,7 @@ async fn bench_main_pipeline_p95_inner() -> Percentiles {
             let resolved = resolve_outcome(&raw_extraction, outcome, |meta| {
                 build_kc_frontmatter(&asset, &raw_extraction, meta)
             });
-            persist_resolved_to_db(&conn, &warmup_id, "application/pdf", "deadbeef", &resolved);
+            kc_persist_resolved_with_conn(&conn, &warmup_id, "application/pdf", "deadbeef", &resolved);
         }
     }
 
@@ -488,7 +427,7 @@ async fn bench_main_pipeline_p95_inner() -> Percentiles {
         let resolved = resolve_outcome(&raw_extraction, outcome, |meta| {
             build_kc_frontmatter(&iter_asset, &raw_extraction, meta)
         });
-        persist_resolved_to_db(&conn, &iter_asset_id, "application/pdf", "deadbeef", &resolved);
+        kc_persist_resolved_with_conn(&conn, &iter_asset_id, "application/pdf", "deadbeef", &resolved);
         durations.push(t0.elapsed());
 
         // 验证写入正确（first/last iter 抽查；不计时）
