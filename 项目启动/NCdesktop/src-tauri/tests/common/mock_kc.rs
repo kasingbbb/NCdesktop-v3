@@ -234,25 +234,33 @@ impl MockKcServer {
     // Scenario 3：不可达（监听后立即停止，连接被拒）
     // -----------------------------------------------------------------
 
-    /// **Scenario 3**：返回一个**已停止**的 server。
+    /// **Scenario 3**：返回一个指向**无人监听端口**的 mock server。
     ///
-    /// 实现方式：start 后立即 `drop(server)`，但保留 `addr`（已停止监听）。
-    /// 调用方对 `addr` 发 HTTP 请求会得到 `connection refused`，NC `KcClient` 应映射为
-    /// `KcCallError::Unreachable`（ADR-002 §"错误分类"）。
+    /// 实现方式：用 `std::net::TcpListener::bind("127.0.0.1:0")` 让 OS 分配一个空闲端口，
+    /// 立即 `drop(listener)` 释放回端口池；保留该端口号到 `addr`。绝大多数 OS 不会立即
+    /// 把刚释放的端口分配给后续 `MockServer::start()`（端口池随机选择），
+    /// 因此调用方对 `addr` 发 HTTP 请求会得到 `connection refused`，
+    /// NC `KcClient` 应映射为 `KcCallError::Unreachable`（ADR-002 §"错误分类"）。
     ///
-    /// 注意：返回的 `MockKcServer.server` 是新起的"空 server"占位（不挂载任何 mock）。
-    /// 该 server 不监听任何特定端口（不与 addr 重叠），仅持有以满足 struct 完整性。
-    /// 真正的"不可达"由 `addr` 指向已释放的端口实现。
+    /// 注意：返回的 `MockKcServer.server` 是新起的"空 server"占位（不挂载任何 mock），
+    /// 仅持有以满足 struct 完整性。占位 server 的端口与 `addr` **不同**（wiremock
+    /// 自动选另一个空闲端口），调用方不应对占位 server 发请求。
     pub async fn start_with_unavailable() -> Self {
-        // 先起一个 server 拿到一个曾经合法的端口
-        let real_server = MockServer::start().await;
-        let addr = *real_server.address();
-        drop(real_server); // 立即停止，使该端口的连接被拒（OS 释放回端口池）
+        // 通过 std::net::TcpListener 拿一个真正无人监听的端口：
+        // 1. bind("127.0.0.1:0") 让 OS 分配空闲端口；
+        // 2. local_addr() 取实际地址；
+        // 3. drop(listener) 释放，端口回到空闲池（短时间内无人监听）。
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("bind 127.0.0.1:0 for unavailable scenario");
+        let addr = listener
+            .local_addr()
+            .expect("local_addr of bound listener");
+        drop(listener); // 释放端口
 
-        // 占位 server（用一个空 MockServer 满足 struct 字段，调用方不应对其发请求）
+        // 占位 server（用一个空 MockServer 满足 struct 字段；其端口与 addr 不同）。
         let placeholder = MockServer::start().await;
         Self {
-            addr, // 指向已停止的端口
+            addr, // 指向无人监听的端口
             server: placeholder,
         }
     }
