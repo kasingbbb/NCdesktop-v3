@@ -36,7 +36,17 @@ pub mod errors; // 本 task 实装基础类型
 pub mod process; // task_008 实装
 pub mod settings; // task_004 / task_010 实装
 
-// 公共类型重导出（task_005 AC-6）。
-// 注意：仅重导核心 4 个，`KcQaPair` / `KcParagraphLink` / `KcTagsSource` 作为支撑类型保留在 `errors::` 命名空间，
+// 公共类型重导出（task_005 AC-6 + task_009 扩展）。
+// 注意：核心 4 个（KcCallError / KcEnrichmentOutcome / KcFallbackReason / KcMeta）来自 errors；
+// `KcQaPair` / `KcParagraphLink` / `KcTagsSource` 作为支撑类型保留在 `errors::` 命名空间，
 // 调用方需要时显式写 `kc::errors::KcTagsSource`（避免根命名空间被过多边缘类型污染）。
 pub use errors::{KcCallError, KcEnrichmentOutcome, KcFallbackReason, KcMeta};
+
+// task_009：lifecycle integration 公共类型重导出，方便 lib.rs / commands / scheduler 引用。
+// 把"进程管理 / HTTP 客户端 / 用户配置"三个最高频使用的类型抬升到 `crate::kc::*` 一级路径。
+pub use process::{KcProcessManager, KcStatus, KcHealthStatus, KcStartError, PortProvider};
+pub use client::{KcClient, KcIngestOptions, KcIngestOutcome};
+pub use settings::{
+    KcOutputStageDefenseMode, KcSettings, build_env_vars, log_with_mask, mask_secrets_by_keys,
+    save_settings,
+};

@@ -29,7 +29,10 @@
 //! 2. **60s 客户端总超时**：通过 `reqwest::Client::builder().timeout(60s)` 配置，不手动 tokio::select!；
 //! 3. **错误细分 6 类**：与 `KcCallError` 6 变体严格一一对应（ADR-002 §"错误分类"）；
 //! 4. **不自动重试**：上层（enrichment step）决定降级路径；
-//! 5. **Key mask**：`Internal.detail` 经过 [`mask_secrets`] 处理，避免 KC 端泄漏 key 传染到 NC 日志。
+//! 5. **Key mask**：`Internal.detail` 经过 [`mask_secrets_by_prefix`] 处理（task_009 TD-5 重命名
+//!    后；原名 `mask_secrets`），避免 KC 端泄漏 key 传染到 NC 日志。语义为"按已知前缀启发"——
+//!    覆盖 KC 服务端日志中可能含的**未知** Key（sk- / zhipu- / Bearer 等），与
+//!    `settings::mask_secrets_by_keys`（"按 NC 已知 Key 精确替换"）**互补不冲突**。
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -331,7 +334,7 @@ fn classify_reqwest_error(e: reqwest::Error) -> KcCallError {
         return KcCallError::Unreachable;
     }
     KcCallError::Internal {
-        detail: mask_secrets(&msg),
+        detail: mask_secrets_by_prefix(&msg),
         code: "REQWEST_ERROR".into(),
     }
 }
@@ -486,8 +489,9 @@ fn parse_success_body(
 /// - `KC_INPUT_TOO_LARGE` → `InputTooLarge`；
 /// - 其他 / body 不可解析 → `Internal { code: "UNKNOWN" }`（容错，避免 KC 新增错误码时漏分类）。
 ///
-/// **detail mask**：透传到 `Internal.detail` 的字符串经过 [`mask_secrets`] 处理，
-/// 防止 KC 端日志含 Key（即便理论上不会，也要兜底）传染到 NC 日志。
+/// **detail mask**：透传到 `Internal.detail` 的字符串经过 [`mask_secrets_by_prefix`] 处理
+/// （task_009 TD-5 重命名，原名 `mask_secrets`），防止 KC 端日志含 Key（即便理论上不会，
+/// 也要兜底）传染到 NC 日志。
 fn classify_500_body(body_bytes: &[u8]) -> KcCallError {
     let json: Value = match serde_json::from_slice(body_bytes) {
         Ok(v) => v,
@@ -495,7 +499,7 @@ fn classify_500_body(body_bytes: &[u8]) -> KcCallError {
             // 500 + body 不可解析：归到 Internal/UNKNOWN（带原始 body 前 200 字节作 debug）。
             let preview = String::from_utf8_lossy(&body_bytes[..body_bytes.len().min(200)]);
             return KcCallError::Internal {
-                detail: mask_secrets(&format!("500 with non-JSON body: {preview}")),
+                detail: mask_secrets_by_prefix(&format!("500 with non-JSON body: {preview}")),
                 code: "UNKNOWN".into(),
             };
         }
@@ -525,19 +529,24 @@ fn classify_500_body(body_bytes: &[u8]) -> KcCallError {
         }
         "KC_INPUT_TOO_LARGE" => KcCallError::InputTooLarge,
         "KC_INTERNAL" | "KC_PARSE_ERROR" | "KC_OUTPUT_ERROR" => KcCallError::Internal {
-            detail: mask_secrets(&message),
+            detail: mask_secrets_by_prefix(&message),
             code: error_code.to_string(),
         },
         // 未知 KC 错误码：当作 Internal 但 code 保留 "UNKNOWN"
         // （日志能看到原 code，便于排查 KC 端新增错误码漏配）。
         _ => KcCallError::Internal {
-            detail: mask_secrets(&format!("unknown error_code={error_code}: {message}")),
+            detail: mask_secrets_by_prefix(&format!("unknown error_code={error_code}: {message}")),
             code: "UNKNOWN".into(),
         },
     }
 }
 
-/// 屏蔽错误信息中可能含的 secret（API Key 等）。
+/// 屏蔽错误信息中可能含的 secret（API Key 等）——**按已知前缀启发**屏蔽**未知** Key。
+///
+/// **task_009 / TD-5 命名统一**：原名 `mask_secrets` 改为 `mask_secrets_by_prefix`，
+/// 与 `settings::mask_secrets_by_keys`（按 NC **已知** Key 精确子串替换）互补不冲突：
+/// - 本函数：覆盖 KC 服务端日志中**未知** Key（NC 不知道 KC 内部用了哪个 Key，靠前缀启发）；
+/// - settings 版本：覆盖 NC **已知** Key（用户在 Settings UI 配的 zhipu / openai Key）。
 ///
 /// **触发条件**（保守策略，宁可多 mask 不少 mask）：
 /// - `sk-XXX` 形式（OpenAI Key 前缀）；
@@ -548,7 +557,7 @@ fn classify_500_body(body_bytes: &[u8]) -> KcCallError {
 /// **替换为 `<redacted>`**——保留信息结构（前后文）但清零 Key 内容。
 ///
 /// **不做的**：不做完整的正则替换（performance + 复杂度），只用简单的子串前缀匹配。
-fn mask_secrets(s: &str) -> String {
+fn mask_secrets_by_prefix(s: &str) -> String {
     // 用一个简单的逐字符状态机，性能足够（错误路径，每次 ingest 最多调一次）。
     let mut result = String::with_capacity(s.len());
     let mut i = 0;
@@ -706,36 +715,36 @@ mod tests {
         assert!(matches!(err, KcCallError::Unreachable));
     }
 
-    // ---- mask_secrets 单测 ----
+    // ---- mask_secrets_by_prefix 单测（task_009 TD-5 重命名后）----
 
     #[test]
-    fn mask_secrets_redacts_openai_key() {
+    fn mask_secrets_by_prefix_redacts_openai_key() {
         let msg = "Error calling sk-abc1234567890XYZ during ingest";
-        let masked = mask_secrets(msg);
+        let masked = mask_secrets_by_prefix(msg);
         assert!(!masked.contains("abc1234567890XYZ"), "key 内容必须被屏蔽");
         assert!(masked.contains("sk-<redacted>"), "应保留 sk- 前缀提示");
     }
 
     #[test]
-    fn mask_secrets_redacts_zhipu_key() {
+    fn mask_secrets_by_prefix_redacts_zhipu_key() {
         let msg = "ZHIPUAI_API_KEY=zhipu-SUPERSECRET99 in env";
-        let masked = mask_secrets(msg);
+        let masked = mask_secrets_by_prefix(msg);
         assert!(!masked.contains("SUPERSECRET99"), "key 内容必须被屏蔽");
         assert!(masked.contains("ZHIPUAI_API_KEY=<redacted>"));
     }
 
     #[test]
-    fn mask_secrets_redacts_bearer_token() {
+    fn mask_secrets_by_prefix_redacts_bearer_token() {
         let msg = "Authorization: Bearer eyJhbGciOiJIUzI1Ni-secret-stuff";
-        let masked = mask_secrets(msg);
+        let masked = mask_secrets_by_prefix(msg);
         assert!(!masked.contains("eyJhbGciOiJIUzI1Ni-secret-stuff"));
         assert!(masked.contains("Bearer <redacted>"));
     }
 
     #[test]
-    fn mask_secrets_preserves_non_secret_text() {
+    fn mask_secrets_by_prefix_preserves_non_secret_text() {
         let msg = "KC internal error: parse failure on line 3";
-        assert_eq!(mask_secrets(msg), msg, "非 secret 文本必须原样保留");
+        assert_eq!(mask_secrets_by_prefix(msg), msg, "非 secret 文本必须原样保留");
     }
 
     // ---- KcIngestOptions 默认值（persist=false 不变量）----
@@ -832,8 +841,11 @@ mod tests {
     }
 
     #[test]
-    fn classify_500_internal_message_masks_secrets() {
+    fn classify_500_internal_message_masks_secrets_by_prefix() {
         // 防御性测试：即便 KC 端不应回传 key，detail 透传前必须 mask（ADR-007 §"日志屏蔽"）。
+        // 注意：本测试覆盖 `mask_secrets_by_prefix`（task_009 TD-5 重命名后；用前缀启发屏蔽
+        // KC 服务端日志中可能含的**未知** Key）。`mask_secrets_by_keys` 由 settings 模块负责
+        // 屏蔽 NC **已知** Key。
         let body = br#"{"detail":{"error_code":"KC_INTERNAL","message":"Auth failed for sk-leakyleakySECRET"}}"#;
         let err = classify_500_body(body);
         match err {

@@ -11,7 +11,7 @@
 //!   前端 `KcSettingsForm.tsx` 复用 `LLMSettingsForm.tsx` 视觉模式；
 //! - PRD §"不可妥协的技术底线 #5" / session_context §3 安全约束 —— Key **不明文落盘到日志**：
 //!   `Debug` impl 手写屏蔽（不能 derive），`masked_*_key()` 给 UI 展示用，
-//!   `mask_secrets()` / `log_with_mask()` 给日志兜底（任意 message 中含 Key 子串都被替换）。
+//!   `mask_secrets_by_keys()` / `log_with_mask()` 给日志兜底（任意 message 中含 Key 子串都被替换）。
 //!
 //! **task_005 占位替换说明**：`kc/mod.rs:37` 已 `pub mod settings;`；task_004 把原 2 行占位
 //! 替换为实装，不动 `mod.rs` / 其他兄弟模块（`client` / `process` / `enrichment` / `defense`
@@ -20,13 +20,19 @@
 //! **task_010 在 task_004 基础上追加的内容**（不动 task_004 已落地的结构 / Default / Debug）：
 //! - [`build_env_vars`] — 输出 `Command::env(...)` 入参，**永远不输出空字符串**（避免
 //!   KC 误判 "Key 已设置但空"，env 名严格大写）；
-//! - [`mask_secrets`]   — 任意 message 中匹配到 Key 子串则替换为占位，**长度 < 8 不替换**
-//!   （防止误命中常见短词，如 "abc123" 这种弱 Key 在防御性 mask 不应触发）；
-//! - [`log_with_mask`]  — 对外日志入口，强制走 `mask_secrets` 再 `log::log!` 输出，
+//! - [`mask_secrets_by_keys`] — 任意 message 中匹配到 **已知 Key 子串**则替换为占位，
+//!   **长度 < 8 不替换**（防止误命中常见短词，如 "abc123" 这种弱 Key 在防御性 mask 不应触发）；
+//! - [`log_with_mask`]  — 对外日志入口，强制走 `mask_secrets_by_keys` 再 `log::log!` 输出，
 //!   kc::* 模块内部统一用此函数替代直接 `log::info!`；
 //! - [`save_settings`]  — 7 个字段一次性写回 DB，bool 落 "true"/"false" 文本，
 //!   防御档位走 `as_str()` snake_case round-trip，Key 为 `None` 时写空串
 //!   （与 `load_opt_string` 把空串视为 None 对齐，UI "清除 Key" 语义一致）。
+//!
+//! **task_009 / TD-5 命名统一**：原 `mask_secrets` 重命名为 `mask_secrets_by_keys`
+//! （已知 Key 精确子串替换），与 `client.rs::mask_secrets_by_prefix`（未知 Key 前缀启发）
+//! **互补不冲突**——两者语义不同（"已知值精确替换" vs "未知值前缀启发"），但同名易混淆，
+//! 故按 TD-5 决策统一改名。所有 kc::* 模块内部调用点（process.rs::drain / client.rs / 本模块
+//! `log_with_mask`）一同更新。
 //!
 //! **不在本 task scope**：
 //! - Tauri command 桥接（task_016 / task_020 前端集成）；
@@ -287,7 +293,10 @@ pub fn build_env_vars(settings: &KcSettings) -> Vec<(String, String)> {
     out
 }
 
-/// **task_010 / 安全护栏** 日志/异常 message 中的 Key 子串屏蔽。
+/// **task_010 / 安全护栏** 日志/异常 message 中的 **已知 Key** 子串屏蔽。
+///
+/// **task_009 / TD-5**：原名 `mask_secrets` 改为 `mask_secrets_by_keys`，明确语义
+/// "按已知 Key 精确子串替换"（与 `client.rs::mask_secrets_by_prefix` "按已知前缀启发"互补）。
 ///
 /// 任意 `message` 中含 `settings.zhipu_api_key` 字面子串 → 替换为 `<ZHIPU_KEY_MASKED>`；
 /// 含 `openai_api_key` → `<OPENAI_KEY_MASKED>`。被 `log_with_mask` 调用。
@@ -303,7 +312,7 @@ pub fn build_env_vars(settings: &KcSettings) -> Vec<(String, String)> {
 ///
 /// **使用规范**：在 kc::* 模块内部，**禁止**直接调用 `log::info!("settings = {:?}", x)`
 /// 形式打印任何可能含 Key 的对象（即便 Debug 已 mask，也以此函数做"运行时字符串兜底"）。
-pub fn mask_secrets(message: &str, settings: &KcSettings) -> String {
+pub fn mask_secrets_by_keys(message: &str, settings: &KcSettings) -> String {
     let mut result = message.to_string();
 
     if let Some(k) = settings.zhipu_api_key.as_deref() {
@@ -320,14 +329,14 @@ pub fn mask_secrets(message: &str, settings: &KcSettings) -> String {
     result
 }
 
-/// 短 Key 防御阈值：低于此长度不参与 `mask_secrets` 替换。
+/// 短 Key 防御阈值：低于此长度不参与 `mask_secrets_by_keys` 替换。
 ///
 /// 选 `8` 的根据：智谱 AI Key 实际长度 32+ 字符，OpenAI `sk-...` 也是 51 字符级别；
 /// 8 是足够保守的下限——真实 Key 必然超过 8 字符，而 8 字符以下的"伪 Key"
 /// 几乎只可能是测试桩 / placeholder / 误填，做替换反而带来误命中风险。
 const MASK_SECRETS_MIN_KEY_LEN: usize = 8;
 
-/// **task_010 / AC-3** 日志统一入口：先 `mask_secrets` 再 `log::log!` 输出。
+/// **task_010 / AC-3** 日志统一入口：先 `mask_secrets_by_keys` 再 `log::log!` 输出。
 ///
 /// kc::* 模块内部**所有**含运行时变量的日志都应走此函数，**禁止**直接 `log::info!(...)`。
 /// 即使 message 不含 Key 子串，走 mask 也是零成本（`str::replace` 只在子串命中时实际拷贝）。
@@ -344,7 +353,7 @@ const MASK_SECRETS_MIN_KEY_LEN: usize = 8;
 /// 选 `log::Level` 入参（而非分别提供 info/warn/error wrapper）：避免重复函数，
 /// 调用方在选 level 时已经做了语义判断。
 pub fn log_with_mask(level: log::Level, message: &str, settings: &KcSettings) {
-    let masked = mask_secrets(message, settings);
+    let masked = mask_secrets_by_keys(message, settings);
     log::log!(level, "{}", masked);
 }
 
@@ -705,16 +714,16 @@ mod tests {
         }
     }
 
-    // ---------- AC-5.3: mask_secrets 替换 zhipu key ----------
+    // ---------- AC-5.3: mask_secrets_by_keys 替换 zhipu key ----------
     #[test]
-    fn mask_secrets_replaces_zhipu_key() {
+    fn mask_secrets_by_keys_replaces_zhipu_key() {
         let s = KcSettings {
             zhipu_api_key: Some(FIXTURE_ZHIPU_KEY.to_string()),
             openai_api_key: None,
             ..Default::default()
         };
         let msg = format!("KC 启动失败 reason=auth, key={FIXTURE_ZHIPU_KEY}, retry=true");
-        let masked = mask_secrets(&msg, &s);
+        let masked = mask_secrets_by_keys(&msg, &s);
 
         // 关键断言：高熵 fixture 一定不会在 mask 后残留
         assert!(
@@ -731,16 +740,16 @@ mod tests {
         assert!(masked.contains("retry=true"));
     }
 
-    // ---------- AC-5.4: mask_secrets 替换 openai key ----------
+    // ---------- AC-5.4: mask_secrets_by_keys 替换 openai key ----------
     #[test]
-    fn mask_secrets_replaces_openai_key() {
+    fn mask_secrets_by_keys_replaces_openai_key() {
         let s = KcSettings {
             zhipu_api_key: None,
             openai_api_key: Some(FIXTURE_OPENAI_KEY.to_string()),
             ..Default::default()
         };
         let msg = format!("[langchain] using model=gpt-4, OPENAI_API_KEY={FIXTURE_OPENAI_KEY}");
-        let masked = mask_secrets(&msg, &s);
+        let masked = mask_secrets_by_keys(&msg, &s);
 
         assert!(
             !masked.contains(FIXTURE_OPENAI_KEY),
@@ -753,9 +762,9 @@ mod tests {
         assert!(masked.contains("model=gpt-4"));
     }
 
-    // ---------- AC-5.5: mask_secrets 保留其他文本 ----------
+    // ---------- AC-5.5: mask_secrets_by_keys 保留其他文本 ----------
     #[test]
-    fn mask_secrets_preserves_other_text() {
+    fn mask_secrets_by_keys_preserves_other_text() {
         let s = KcSettings {
             zhipu_api_key: Some(FIXTURE_ZHIPU_KEY.to_string()),
             openai_api_key: Some(FIXTURE_OPENAI_KEY.to_string()),
@@ -764,25 +773,25 @@ mod tests {
 
         // 任何不含 Key 子串的 message 必须原样返回
         let msg = "KC 健康检查 OK，端口=12345，uptime=123s，model=glm-4";
-        let masked = mask_secrets(msg, &s);
+        let masked = mask_secrets_by_keys(msg, &s);
         assert_eq!(masked, msg, "不含 Key 子串时应原样返回");
 
         // 边界：空 message
-        assert_eq!(mask_secrets("", &s), "");
+        assert_eq!(mask_secrets_by_keys("", &s), "");
 
         // 边界：两个 Key 都 None，但 message 长 → 不可能 panic / 误替换
         let s_none = KcSettings::default();
         let long_msg = "x".repeat(1000);
         assert_eq!(
-            mask_secrets(&long_msg, &s_none),
+            mask_secrets_by_keys(&long_msg, &s_none),
             long_msg,
             "两个 Key 都 None 时任意 message 都原样返回"
         );
     }
 
-    // ---------- AC-5.6: mask_secrets 不替换短 Key（< 8 字符） ----------
+    // ---------- AC-5.6: mask_secrets_by_keys 不替换短 Key（< 8 字符） ----------
     #[test]
-    fn mask_secrets_does_not_replace_short_key() {
+    fn mask_secrets_by_keys_does_not_replace_short_key() {
         // 7 字符以下：不替换（防御性，input.md 要求"长度 < 8 不做替换"）
         let s_short = KcSettings {
             zhipu_api_key: Some("abc1234".to_string()), // 7 chars
@@ -790,7 +799,7 @@ mod tests {
             ..Default::default()
         };
         let msg = "log entry: abc1234 / test123 / other";
-        let masked = mask_secrets(msg, &s_short);
+        let masked = mask_secrets_by_keys(msg, &s_short);
         assert_eq!(
             masked, msg,
             "Key < 8 字符时不应替换（防止误命中常见短词），实际: {masked}"
@@ -803,7 +812,7 @@ mod tests {
             ..Default::default()
         };
         let msg_8 = "log: abc12345 found";
-        let masked_8 = mask_secrets(msg_8, &s_8);
+        let masked_8 = mask_secrets_by_keys(msg_8, &s_8);
         assert!(
             masked_8.contains("<ZHIPU_KEY_MASKED>"),
             "Key == 8 字符时应替换（边界）"
@@ -863,10 +872,10 @@ mod tests {
     // ---------- 附加（task_010 安全护栏）：log_with_mask 不泄漏 Key ----------
     //
     // 注：log::Level 接口的副作用（实际是否写日志文件）由 logger backend 决定，
-    // 单测环境无 logger 时也不会失败。本测试验证 `log_with_mask` 内部走 mask_secrets
+    // 单测环境无 logger 时也不会失败。本测试验证 `log_with_mask` 内部走 mask_secrets_by_keys
     // 路径（即间接验证：调用前的 message 经过 mask 后必然不含原 Key）。
     #[test]
-    fn log_with_mask_routes_through_mask_secrets() {
+    fn log_with_mask_routes_through_mask_secrets_by_keys() {
         let s = KcSettings {
             zhipu_api_key: Some(FIXTURE_ZHIPU_KEY.to_string()),
             openai_api_key: Some(FIXTURE_OPENAI_KEY.to_string()),
@@ -878,8 +887,8 @@ mod tests {
             "ingest failed: zhipu={FIXTURE_ZHIPU_KEY}, fallback openai={FIXTURE_OPENAI_KEY}"
         );
 
-        // 通过 mask_secrets（与 log_with_mask 内部同一路径）验证 mask 真的发生
-        let masked = mask_secrets(&dangerous, &s);
+        // 通过 mask_secrets_by_keys（与 log_with_mask 内部同一路径）验证 mask 真的发生
+        let masked = mask_secrets_by_keys(&dangerous, &s);
         assert!(
             !masked.contains(FIXTURE_ZHIPU_KEY),
             "log_with_mask 路径必须屏蔽 zhipu key，实际: {masked}"

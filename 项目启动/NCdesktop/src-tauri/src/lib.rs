@@ -36,6 +36,38 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_drag::init())
+        // task_009 / AC-2：Window close 钩子——监听 `CloseRequested` 与 `Destroyed`，
+        // 触发 KC 子进程优雅退出（SIGTERM + 5s graceful + SIGKILL fallback）。
+        //
+        // 设计要点：
+        // 1. **同时监听两种事件**：macOS 上点关闭按钮触发 `CloseRequested`（默认不关窗
+        //    需 `api.close()`，但 Tauri 默认 builder 已配置自动关闭主窗）；Cmd+Q / Dock
+        //    退出 / 进程被外部 kill 时直接走 `Destroyed`。两者都要触发 stop。
+        // 2. **idempotent**：`KcProcessManager::stop` 已实装幂等（已 Stopped 时直接返回），
+        //    重复触发安全。
+        // 3. **不阻塞 close**：stop 同步等 5s graceful，对窗口关闭有微小阻塞——但用户感知
+        //    上"窗口关了 → 进程清理"是合理的，不会让 UI 卡死（Drop trait 也兜底）。
+        .on_window_event(|window, event| {
+            use tauri::WindowEvent;
+            match event {
+                WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => {
+                    if let Some(mgr) =
+                        window.try_state::<std::sync::Arc<kc::KcProcessManager>>()
+                    {
+                        log::info!(
+                            "[kc] WindowEvent {:?} 触发 → KcProcessManager.stop()",
+                            if matches!(event, WindowEvent::CloseRequested { .. }) {
+                                "CloseRequested"
+                            } else {
+                                "Destroyed"
+                            }
+                        );
+                        mgr.stop();
+                    }
+                }
+                _ => {}
+            }
+        })
         .setup(|app| {
             // release build 也启用 log（之前仅 debug 启用导致生产 binary 无任何
             // 日志写入 NoteCapt.log，所有线上排查全部失明 —— 见拖拽诊断 2026-05-17）。
@@ -130,7 +162,7 @@ pub fn run() {
             }
 
             // task_007 / ADR-004：注册 SourceMissingSet 内存态，并异步扫描所有
-            // root assets 的 source 是否存在；扫描在 tauri::async_runtime 内进行，
+            // root assets 的 source 是否存在；扫描在 tauri::async_runtime 内进行,
             // 绝不阻塞 setup hook。失败仅 warn。
             app.manage(source_scan::SourceMissingSet::new());
             {
@@ -138,6 +170,44 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) = source_scan::scan_all_projects(&app_handle) {
                         log::warn!("[source_scan] 启动期扫描失败: {e}");
+                    }
+                });
+            }
+
+            // task_009 / AC-1 + AC-4：KC 进程管理 + HTTP 客户端单例注入到 Tauri State。
+            //
+            // 设计要点（ADR-001 / ADR-002 / ADR-009）：
+            // 1. **Arc 单例**：`KcProcessManager` 与 `KcClient` 都用 `Arc<>` 包裹，让后续
+            //    commands / scheduler 通过 `app.state::<Arc<KcProcessManager>>()` 共享同一实例；
+            // 2. **PortProvider 绑定**：`KcClient::new(mgr.clone() as Arc<dyn PortProvider>)`，
+            //    client 每次 ingest 通过 mgr 实时取当前端口（mgr 重启后端口变更 client 自动跟进）；
+            // 3. **异步拉起 KC（500ms 延迟）**：用 `tauri::async_runtime::spawn` + `sleep(500ms)`
+            //    让 setup 立即返回（不阻塞 splash + 首屏渲染）；KC 启动 ~3-5s 在后台跑；
+            // 4. **启动失败不阻塞 NC**：start 失败仅 log::warn——状态机已置 Unavailable，
+            //    KcStatus::Unavailable 时 KcClient.ingest_text 返 Unreachable，主链路降级走
+            //    markitdown 原 MD（ADR-004 §"5 类失败兜底"）。
+            //
+            // **Window close 钩子（AC-2）**：在 `tauri::Builder` 上挂 `on_window_event`，
+            // 见上方 `.on_window_event(...)` 闭包——通过 `window.try_state` 取 mgr 调 stop()。
+            let kc_manager: std::sync::Arc<kc::KcProcessManager> =
+                std::sync::Arc::new(kc::KcProcessManager::new(app.handle()));
+            let kc_client: std::sync::Arc<kc::KcClient> = std::sync::Arc::new(kc::KcClient::new(
+                kc_manager.clone() as std::sync::Arc<dyn kc::PortProvider>,
+            ));
+            app.manage(kc_manager.clone());
+            app.manage(kc_client);
+
+            // 异步拉起 KC（500ms 延迟，不阻塞 setup 返回）。
+            {
+                let mgr_for_start = kc_manager.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    match mgr_for_start.start().await {
+                        Ok(()) => log::info!("[kc] KC 子进程启动成功"),
+                        Err(e) => log::warn!(
+                            "[kc] KC 子进程启动失败 reason={:?} —— NC 继续运行，KC enrich 步骤将走 fallback（markitdown 原 MD）",
+                            e
+                        ),
                     }
                 });
             }

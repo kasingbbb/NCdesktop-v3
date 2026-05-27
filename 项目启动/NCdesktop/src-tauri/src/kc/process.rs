@@ -38,8 +38,10 @@
 //! 3. **Pipe drain join**：两个 `thread::spawn(drain stdout/stderr)` 的 `JoinHandle` 保存在 state，
 //!    `stop()` 时 join，避免线程 leak。
 //! 4. **Key 不落盘**：env 变量经 `Command::env()` 注入子进程，Rust 进程层不写文件；drain 日志走
-//!    `crate::kc::settings::mask_secrets()` 精确子串替换屏蔽（MAJOR-2 fix：替代原前缀启发
-//!    `mask_secret`，覆盖智谱 dot 格式 / JSON dump / Debug dump 三类漏屏场景）。
+//!    `crate::kc::settings::mask_secrets_by_keys()` 精确子串替换屏蔽（task_009 TD-5：原名
+//!    `mask_secrets`，统一改名后语义更明确——"按已知 Key 精确替换"，与 `client::mask_secrets_by_prefix`
+//!    "按未知 Key 前缀启发"互补）。MAJOR-2 fix（task_008）：替代原前缀启发 `mask_secret`，
+//!    覆盖智谱 dot 格式 / JSON dump / Debug dump 三类漏屏场景。
 //! 5. **冷却期边界**：30s 内 ≥ 2 次 **OR** 60s 内 ≥ 3 次重启 → `RestartCooldownExceeded`，避免 fork bomb。
 //!    两段阈值互补：短窗口严格抓"快速失败模式"（30s 内连续 2 次），长窗口宽松抓"慢崩累积"（60s 内 3 次）。
 //!    设计要点：30s 窗口 ⊂ 60s 窗口，若两个窗口阈值都设 2 则 30s 规则被 60s 规则吞掉（FIX 第 1 轮修正）。
@@ -263,6 +265,22 @@ impl KcProcessManager {
         }
     }
 
+    /// **task_009 AC-5**：集成测试用构造器——同 `new_for_test` 但 pub 暴露给
+    /// `tests/kc_lifecycle.rs` 等外部集成测试调用。emit 静默失败（无 AppHandle）。
+    ///
+    /// **严禁生产路径使用**：通过 `#[doc(hidden)]` + 命名 `_no_app` 后缀双重提示。
+    /// 名字带 `_test_only`——任何 reviewer / 后续 dev 看到都应当意识到这不是生产 API。
+    ///
+    /// 用途仅限：在 `KC_USE_MOCK_PORT` 短路路径下测试 start/stop/health_check 状态机
+    /// （不需要真实 Tauri AppHandle 上下文）。
+    #[doc(hidden)]
+    pub fn new_test_only_no_app() -> Self {
+        Self {
+            app_handle: None,
+            state: Arc::new(Mutex::new(KcInternalState::new())),
+        }
+    }
+
     // -----------------------------------------------------------------
     // AC-3: async fn start()
     // -----------------------------------------------------------------
@@ -341,7 +359,8 @@ impl KcProcessManager {
 
         // env 注入（ADR-007）：直接从 NC settings 读，绝不写 .env。
         // FIX 第 1 轮（MAJOR-2）：读出完整 `KcSettings` 并以 `Arc` 共享，drain 线程走 task_010 精确子串
-        // 的 `mask_secrets`（替代旧的前缀启发 `mask_secret`，覆盖 dot 格式 / JSON / Debug 三类漏屏）。
+        // 的 `mask_secrets_by_keys`（task_009 TD-5 重命名后；替代旧的前缀启发 `mask_secret`，
+        // 覆盖 dot 格式 / JSON / Debug 三类漏屏）。
         let kc_settings = read_kc_settings(&app);
         let zhipu_key = kc_settings.zhipu_api_key.clone();
         let openai_key = kc_settings.openai_api_key.clone();
@@ -398,8 +417,8 @@ impl KcProcessManager {
 
             // 步骤 5：drain stdout/stderr（参考 markitdown.rs:322-336）。
             // 双线程持续读，避免 OS pipe buffer 满后 KC 阻塞在 write 上。
-            // 每个线程 clone 一份 `Arc<KcSettings>`，drain 内每行经 `mask_secrets(line, &settings)`
-            // 替换后再 log（MAJOR-2 fix）。
+            // 每个线程 clone 一份 `Arc<KcSettings>`，drain 内每行经
+            // `mask_secrets_by_keys(line, &settings)` 替换后再 log（MAJOR-2 fix + task_009 TD-5 重命名）。
             let stdout = child.stdout.take();
             let stderr = child.stderr.take();
             let stdout_settings = Arc::clone(&settings_arc);
@@ -810,20 +829,73 @@ impl Drop for KcProcessManager {
 
 /// 探测 KC python 解释器路径（参考 scheduler.rs:798 `detect_embedded_markitdown_python`）。
 ///
-/// 优先级（ADR-010）：`.app/Contents/Resources/kc/venv/bin/python` → python3 → fallback markitdown-venv。
-fn detect_embedded_kc_python(app: &AppHandle) -> Option<String> {
+/// 优先级（ADR-010）：
+/// 1. `.app/Contents/Resources/kc/venv/bin/python`（DMG 打包后正式路径）
+/// 2. `.app/Contents/Resources/kc/venv/bin/python3`（python 软链不一致时的兜底）
+/// 3. **仅 dev 模式（`debug_assertions`）**：`KnowledgeCompiler/.venv/bin/python`
+///    （从 cwd 向上找 KnowledgeCompiler 工作区，让本机开发无需打 DMG 也能起 KC）
+/// 4. 兜底：复用 markitdown-venv（仅 dev 期 + KC 未独立打包时；ADR-010 要求最终独立 venv）
+///
+/// **task_009 / AC-3**：原 fn 私有；改 `pub` 以便 lib.rs 在 setup 前可调用做"打包预检"。
+/// dev fallback 用 `#[cfg(debug_assertions)]` 保护——release binary 永远不会从外部仓库拉 venv。
+pub fn detect_embedded_kc_python(app: &AppHandle) -> Option<String> {
     let resource_dir = app.path().resource_dir().ok()?;
-    let candidates = [
+    let mut candidates: Vec<PathBuf> = vec![
         resource_dir.join("kc/venv/bin/python"),
         resource_dir.join("kc/venv/bin/python3"),
-        // fallback：暂复用 markitdown-venv（仅 dev 期 + KC 未独立打包时；ADR-010 要求最终独立 venv）。
-        resource_dir.join("markitdown-venv/bin/python"),
-        resource_dir.join("markitdown-venv/bin/python3"),
     ];
+
+    // dev fallback：仅 debug 编译时，向上找 KnowledgeCompiler/.venv（release 严禁）。
+    #[cfg(debug_assertions)]
+    {
+        if let Some(p) = find_dev_kc_venv_python() {
+            candidates.push(p);
+        }
+    }
+
+    // 兜底：markitdown-venv（仅 dev / 过渡期）。
+    candidates.push(resource_dir.join("markitdown-venv/bin/python"));
+    candidates.push(resource_dir.join("markitdown-venv/bin/python3"));
+
     candidates
         .into_iter()
         .find(|p| p.is_file())
         .map(|p| p.to_string_lossy().to_string())
+}
+
+/// dev 模式从 cwd 向上找 `KnowledgeCompiler/.venv/bin/python`。
+///
+/// 探测策略：从当前可执行文件目录或 cwd 出发，向上最多 6 级查 sibling `KnowledgeCompiler/`。
+/// 仅在 debug build 启用——release build 不会编译此函数（避免任何泄漏外部仓库路径的可能）。
+#[cfg(debug_assertions)]
+fn find_dev_kc_venv_python() -> Option<PathBuf> {
+    // 优先从 cwd 出发（dev 启动时 cwd 一般是 src-tauri/ 或项目根目录）。
+    let starts: Vec<PathBuf> = [
+        std::env::current_dir().ok(),
+        std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    for start in starts {
+        let mut cur: Option<&std::path::Path> = Some(start.as_path());
+        for _ in 0..6 {
+            let Some(dir) = cur else { break };
+            // 探测 sibling KnowledgeCompiler/.venv/bin/python
+            let candidate = dir.join("KnowledgeCompiler/.venv/bin/python");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+            // 探测同 workspace 下 ../../KLchunkline/KnowledgeCompiler（本机实际目录结构）
+            let candidate_kl = dir.join("KLchunkline/KnowledgeCompiler/.venv/bin/python");
+            if candidate_kl.is_file() {
+                return Some(candidate_kl);
+            }
+            cur = dir.parent();
+        }
+    }
+    None
 }
 
 /// 探测 KC `run_api.py` 路径。
@@ -867,8 +939,9 @@ fn ensure_kc_runtime_dir(app: &AppHandle) -> PathBuf {
 /// 主链路不阻塞。
 ///
 /// **MAJOR-2 fix**：原版 `read_kc_keys_from_settings` 仅返回两个 Key 字符串；本版本返回完整
-/// `KcSettings`，让 drain 线程能用 `mask_secrets(line, &settings)` 精确替换日志中的 Key 子串
-/// （覆盖 task_008 旧 `mask_secret` 漏屏的 dot 格式 / JSON / Debug dump 三类场景）。
+/// `KcSettings`，让 drain 线程能用 `mask_secrets_by_keys(line, &settings)`（task_009 TD-5
+/// 重命名后）精确替换日志中的 Key 子串（覆盖 task_008 旧 `mask_secret` 漏屏的 dot 格式 / JSON /
+/// Debug dump 三类场景）。
 fn read_kc_settings(app: &AppHandle) -> crate::kc::settings::KcSettings {
     use crate::kc::settings::KcSettings;
     let db_state = match app.try_state::<crate::db::Database>() {
@@ -956,9 +1029,12 @@ fn graceful_terminate_child(child: &mut Child, graceful_window: Duration) {
 
 /// 持续读 pipe 输出 + 按行写日志 + 自动屏蔽 Key（KC-MOD-7）。
 ///
-/// **MAJOR-2 fix**：每行经 `crate::kc::settings::mask_secrets(line, settings)` 精确子串
-/// 替换后再写 log，**取代**旧的 token 前缀启发 `mask_secret`（漏屏 dot 格式智谱 Key /
-/// JSON dump / Debug dump 三类场景；reviewer 已 verify）。
+/// **MAJOR-2 fix + task_009 TD-5 重命名**：每行经
+/// `crate::kc::settings::mask_secrets_by_keys(line, settings)` 精确子串替换后再写 log，
+/// **取代**旧的 token 前缀启发 `mask_secret`（漏屏 dot 格式智谱 Key / JSON dump / Debug dump
+/// 三类场景；reviewer 已 verify）。函数名由 `mask_secrets` 改为 `mask_secrets_by_keys`
+/// 后语义更明确（"已知 Key 精确替换" vs client 模块的 `mask_secrets_by_prefix` "未知 Key
+/// 前缀启发"）。
 ///
 /// `settings` 通过 `Arc<KcSettings>` 在 spawn 线程时 clone 进入闭包，避免 lifetime 问题。
 fn drain_pipe_to_log<R: std::io::Read>(
@@ -985,7 +1061,7 @@ fn drain_pipe_to_log<R: std::io::Read>(
                         log::info!(
                             "[{}] {}",
                             prefix,
-                            crate::kc::settings::mask_secrets(&line, settings)
+                            crate::kc::settings::mask_secrets_by_keys(&line, settings)
                         );
                     }
                 }
@@ -999,7 +1075,7 @@ fn drain_pipe_to_log<R: std::io::Read>(
         log::info!(
             "[{}] {}",
             prefix,
-            crate::kc::settings::mask_secrets(tail, settings)
+            crate::kc::settings::mask_secrets_by_keys(tail, settings)
         );
     }
 }
@@ -1161,14 +1237,15 @@ mod tests {
     }
 
     // -------------------------------------------------------------
-    // mask_secrets 替换 dot Key / JSON / Debug（FIX 第 1 轮 MAJOR-2）
+    // mask_secrets_by_keys 替换 dot Key / JSON / Debug（FIX 第 1 轮 MAJOR-2 + task_009 TD-5 重命名）
     // -------------------------------------------------------------
     //
     // 设计：旧自写 `mask_secret` 用前缀启发，漏屏 3 类场景（reviewer verify）：
     //   (a) 智谱真实 dot 格式 Key `a3f2b8.xyz9876` → dot 后明文泄漏
     //   (b) JSON 字段 `{"zhipuai_api_key":"abc..."}` → 完全不 mask
     //   (c) Debug 输出 `KcSettings { zhipu_api_key: Some("...") }` → 完全不 mask
-    // 改用 task_010 `mask_secrets(msg, &settings)` 精确子串替换后，三类全部命中。
+    // 改用 task_010 `mask_secrets_by_keys(msg, &settings)`（task_009 TD-5 重命名）精确子串
+    // 替换后，三类全部命中。
 
     /// 高熵 dot 格式智谱 Key fixture（≥ 8 字符触发 task_010 mask 阈值）。
     const DOT_FIXTURE_KEY: &str = "a3f2b8cd4e5f6789abcdef.xyz1234567890def";
@@ -1178,14 +1255,14 @@ mod tests {
 
     /// MAJOR-2 验证 (a)：智谱真实 dot 格式 Key 应被完全屏蔽（旧实装 dot 后明文泄漏）。
     #[test]
-    fn mask_secrets_obscures_zhipu_dot_format() {
-        use crate::kc::settings::{mask_secrets, KcSettings};
+    fn mask_secrets_by_keys_obscures_zhipu_dot_format() {
+        use crate::kc::settings::{mask_secrets_by_keys, KcSettings};
         let settings = KcSettings {
             zhipu_api_key: Some(DOT_FIXTURE_KEY.to_string()),
             ..Default::default()
         };
         let drain_line = format!("ZHIPUAI_API_KEY={DOT_FIXTURE_KEY} (启动日志)");
-        let masked = mask_secrets(&drain_line, &settings);
+        let masked = mask_secrets_by_keys(&drain_line, &settings);
 
         // dot 前 + dot + dot 后整体都不得残留
         assert!(
@@ -1208,8 +1285,8 @@ mod tests {
 
     /// MAJOR-2 验证 (b)：JSON 字段 dump（小写 + 引号包裹）应被完全屏蔽。
     #[test]
-    fn mask_secrets_obscures_json_field_dump() {
-        use crate::kc::settings::{mask_secrets, KcSettings};
+    fn mask_secrets_by_keys_obscures_json_field_dump() {
+        use crate::kc::settings::{mask_secrets_by_keys, KcSettings};
         let settings = KcSettings {
             zhipu_api_key: Some(PLAIN_FIXTURE_KEY.to_string()),
             openai_api_key: None,
@@ -1218,7 +1295,7 @@ mod tests {
         let drain_line = format!(
             r#"received settings dump: {{"zhipuai_api_key":"{PLAIN_FIXTURE_KEY}","model":"glm-4"}}"#
         );
-        let masked = mask_secrets(&drain_line, &settings);
+        let masked = mask_secrets_by_keys(&drain_line, &settings);
 
         // Key 值不得残留（旧 mask_secret 因无 sk-/zhipu- 前缀完全不 mask）
         assert!(
@@ -1234,8 +1311,8 @@ mod tests {
 
     /// MAJOR-2 验证 (c)：Debug 输出（`KcSettings { ... }`）格式应被完全屏蔽。
     #[test]
-    fn mask_secrets_obscures_debug_dump() {
-        use crate::kc::settings::{mask_secrets, KcSettings};
+    fn mask_secrets_by_keys_obscures_debug_dump() {
+        use crate::kc::settings::{mask_secrets_by_keys, KcSettings};
         let zhipu = PLAIN_FIXTURE_KEY.to_string();
         let openai = format!("sk-{}", "Z".repeat(40)); // 高熵无 dash 长 Key
         let settings = KcSettings {
@@ -1249,7 +1326,7 @@ mod tests {
         let drain_line = format!(
             r#"KcSettingsCopy {{ zhipu_api_key: Some("{zhipu}"), openai_api_key: Some("{openai}"), enabled: true }}"#
         );
-        let masked = mask_secrets(&drain_line, &settings);
+        let masked = mask_secrets_by_keys(&drain_line, &settings);
 
         assert!(!masked.contains(&zhipu), "Debug 中 zhipu Key 不得残留: {masked}");
         assert!(!masked.contains(&openai), "Debug 中 openai Key 不得残留: {masked}");
