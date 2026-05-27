@@ -922,6 +922,16 @@ export interface KcHealthStatus {
   uptimeSecs: number | null;
   /** 后端调 health_check 时刻（RFC3339，可直接 `new Date()`） */
   lastCheck: string;
+  /**
+   * KC 子进程是否启用 AI 能力（基于 ai_provider 配置与 Key 实际可用性）。
+   *
+   * **PM ESCALATE 2026-05-27 补丁（task_016 AC-7）**：KC 后端 `/health` 已返回 ai_enabled。
+   * 前端用此字段区分"Key 已配置但 AI 未启用"（如 ai_provider 缺失）vs"AI 完整就绪"。
+   *
+   * 后端 task_020 KcHealthStatusDto 当前可能尚未透传此字段（缺失时为 undefined/null）；
+   * 前端按"未知"处理（不显示判定，避免误导用户）。
+   */
+  aiEnabled?: boolean | null;
 }
 
 /**
