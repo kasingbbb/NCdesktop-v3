@@ -56,3 +56,6 @@ unicode-normalization = "0.1"
 [dev-dependencies]
 env_logger = "0.11"
 tempfile = "3"
+# task_006_mock_kc_server：HTTP mock server，用于集成测试模拟 KC 子进程响应（ADR-011）。
+# 仅 dev-dep，不进 release binary；与现有 reqwest 0.12 共享 hyper 1.x，无版本冲突。
+wiremock = "0.6"
