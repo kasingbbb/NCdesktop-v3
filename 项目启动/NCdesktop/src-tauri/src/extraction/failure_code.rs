@@ -15,12 +15,19 @@ const TIMEOUT_THRESHOLD: Duration = Duration::from_secs(90);
 /// 可打印字符占比阈值：< 50% 判 gibberish。
 const PRINTABLE_RATIO_THRESHOLD: f32 = 0.5;
 
-/// 8 类失败错误码（与 Debate Layer 2 共识、task_001_architect §三 ADR-007 字符级一致）。
+/// 失败错误码集合：8 类 markitdown 失败 + 5 类 KC 增强失败（task_003 追加）。
 ///
 /// 序列化策略：
 /// - `as_str()` / `Display` / DB / IPC 一律 `SCREAMING_SNAKE_CASE`（如 `"E_RUNTIME_MISSING"`）；
 /// - **不**实现 `serde::Serialize`，避免 derived 序列化形态（如 PascalCase）混入；
 ///   调用方落库 / 上报均显式经 `as_str()`。
+///
+/// 来源：
+/// - markitdown 8 类（前缀 `E*` / `EOutput*` / `ETimeout*` / `EScan*` / `EAudio*` / `EExtra*` /
+///   `ERuntime*`）—— Debate Layer 2 共识 + task_001_architect §三 ADR-007；
+/// - KC 5 类（前缀 `EKc*`）—— task_001_architect ADR-004 "5 类失败兜底状态机"。
+///   KC 失败码**不**由 `classify_output` 产生，由 `kc::errors::KcCallError -> FailureCode`
+///   单独映射后仅写 `conversion_meta.failure_code`（不污染 `extracted_content.status`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureCode {
     /// 嵌入运行时缺失（python / venv / markitdown module 不可用）。
@@ -39,6 +46,17 @@ pub enum FailureCode {
     EOutputNoStructure,
     /// 子进程被 90s 总超时强杀。
     ETimeout90s,
+    /// **A 类**：KC 子进程不可达（HTTP connect 失败 / 进程未启动 / 健康检查 fail）。
+    EKcUnavailable,
+    /// **B 类**：KC 内部错误（KC 返回 `KC_PARSE_ERROR` / `KC_INTERNAL` / `KC_OUTPUT_ERROR`，
+    /// 或 KC 200 但 `enhanced_markdown` 字段缺失（malformed））。
+    EKcEnrichFailed,
+    /// **C 类**：KC LLM 不可用（KC 返回 `KC_LLM_UNAVAILABLE`，可降级 `partial`）。
+    EKcLlmUnavailable,
+    /// **D 类**：KC 调用超时（NC 客户端 60s / KC 服务端 50s）。
+    EKcTimeout,
+    /// **E 类**：KC 输入超限（KC 返回 `KC_INPUT_TOO_LARGE`）。
+    EKcInputTooLarge,
 }
 
 impl FailureCode {
@@ -53,6 +71,11 @@ impl FailureCode {
             FailureCode::EOutputGibberish => "E_OUTPUT_GIBBERISH",
             FailureCode::EOutputNoStructure => "E_OUTPUT_NO_STRUCTURE",
             FailureCode::ETimeout90s => "E_TIMEOUT_90S",
+            FailureCode::EKcUnavailable => "E_KC_UNAVAILABLE",
+            FailureCode::EKcEnrichFailed => "E_KC_ENRICH_FAILED",
+            FailureCode::EKcLlmUnavailable => "E_KC_LLM_UNAVAILABLE",
+            FailureCode::EKcTimeout => "E_KC_TIMEOUT",
+            FailureCode::EKcInputTooLarge => "E_KC_INPUT_TOO_LARGE",
         }
     }
 }
@@ -168,6 +191,35 @@ mod tests {
         let code = FailureCode::EOutputEmpty;
         assert_eq!(format!("{code}"), "E_OUTPUT_EMPTY");
         assert_eq!(format!("{}", FailureCode::ETimeout90s), "E_TIMEOUT_90S");
+        // KC 失败码（task_003）：Display 与 as_str 形态一致。
+        assert_eq!(format!("{}", FailureCode::EKcUnavailable), "E_KC_UNAVAILABLE");
+        assert_eq!(format!("{}", FailureCode::EKcInputTooLarge), "E_KC_INPUT_TOO_LARGE");
+    }
+
+    // --- task_003 AC-5：KC 5 类失败码 as_str / Display ---
+
+    #[test]
+    fn as_str_kc_variants_returns_screaming_snake_case() {
+        // 字面值与 ADR-004 §"5 类失败映射"、input.md AC-2 字符级一致。
+        // 特别注意：`E_KC_INPUT_TOO_LARGE` 是 `TOO_LARGE` 不是 `OVERSIZE`。
+        assert_eq!(FailureCode::EKcUnavailable.as_str(), "E_KC_UNAVAILABLE");
+        assert_eq!(FailureCode::EKcEnrichFailed.as_str(), "E_KC_ENRICH_FAILED");
+        assert_eq!(FailureCode::EKcLlmUnavailable.as_str(), "E_KC_LLM_UNAVAILABLE");
+        assert_eq!(FailureCode::EKcTimeout.as_str(), "E_KC_TIMEOUT");
+        assert_eq!(FailureCode::EKcInputTooLarge.as_str(), "E_KC_INPUT_TOO_LARGE");
+    }
+
+    #[test]
+    fn display_kc_variants_match_as_str() {
+        for code in [
+            FailureCode::EKcUnavailable,
+            FailureCode::EKcEnrichFailed,
+            FailureCode::EKcLlmUnavailable,
+            FailureCode::EKcTimeout,
+            FailureCode::EKcInputTooLarge,
+        ] {
+            assert_eq!(format!("{code}"), code.as_str());
+        }
     }
 
     // --- AC-4：classify_output 每条分支 ---
