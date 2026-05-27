@@ -894,6 +894,82 @@ export async function getKnowledgeGraph(libraryId: string): Promise<KnowledgeGra
   return invoke<KnowledgeGraphData>("get_knowledge_graph", { libraryId });
 }
 
+// ── KC 集成层（task_020）─────────────────────────────────────────────────
+// 后端真相来源：src-tauri/src/commands/kc.rs。
+// 与 commands::kc::KcHealthStatusDto / KcSettingsPayload 字段严格 round-trip。
+// camelCase 由后端 #[serde(rename_all = "camelCase")] 锁住——双向无歧义。
+
+/** KC 子进程当前状态。前端 banner / settings 页 polling 显示。 */
+export interface KcHealthStatus {
+  /** "ready" | "starting" | "stopped" | "unavailable" */
+  status: string;
+  /** 仅 status=unavailable 时非空 */
+  reason: string | null;
+  /** 当前监听端口；非 ready 时为 null */
+  port: number | null;
+  /** 自进入 ready 起累计秒数；非 ready 时为 null */
+  uptimeSecs: number | null;
+  /** 后端调 health_check 时刻（RFC3339，可直接 `new Date()`） */
+  lastCheck: string;
+}
+
+/**
+ * KcSettings 保存载荷。
+ *
+ * `*KeyAction` 三态语义（与 SaveLlmConfigPayload 一致）：
+ * - `"keep"` ⇒ 不动 DB 中现有 Key；`*KeyValue` 可省略；
+ * - `"clear"` ⇒ 清除 Key（DB 写空串，等价"未配置"）；`*KeyValue` 可省略；
+ * - `"set"` ⇒ 用 `*KeyValue` 作为新 Key（trim 后非空，否则后端报错）。
+ *
+ * Key 任一变化时后端会异步触发 KcProcessManager.restart()
+ * （前端订阅 `notecapt/kc-status-changed` 事件感知进度，本调用立即返回 Ok）。
+ */
+export interface KcSettingsPayload {
+  enabled: boolean;
+  useAi: boolean;
+  enableQa: boolean;
+  enableLinks: boolean;
+  zhipuKeyAction: "keep" | "clear" | "set";
+  zhipuKeyValue?: string;
+  openaiKeyAction: "keep" | "clear" | "set";
+  openaiKeyValue?: string;
+}
+
+/** 查询 KC 当前进程状态（成功路径永不抛错；HTTP 探测降级走 reason 字段）。 */
+export async function getKcHealth(): Promise<KcHealthStatus> {
+  return invoke<KcHealthStatus>("get_kc_health");
+}
+
+/**
+ * 用户手动重启 KC 子进程。
+ * 受冷却期约束（30s 内 ≥ 2 次 OR 60s 内 ≥ 3 次会被拒，错误以 string reject）。
+ */
+export async function restartKcProcess(): Promise<void> {
+  return invoke<void>("restart_kc_process");
+}
+
+/**
+ * 保存 KcSettings 7 字段；如两个 Key 任一发生变化，后端**异步**触发 KC 重启
+ * （本调用立即返回 Ok，不阻塞 UI）。
+ *
+ * 错误以 string reject（如 `"请填写 zhipu_key_action 对应的 Key..."` /
+ * `"无效的 openai_key_action..."`）。调用方按既有 `try { await ... } catch (e: string)` 模式处理。
+ */
+export async function setKcSettings(settings: KcSettingsPayload): Promise<void> {
+  return invoke<void>("set_kc_settings", {
+    settings: {
+      enabled: settings.enabled,
+      useAi: settings.useAi,
+      enableQa: settings.enableQa,
+      enableLinks: settings.enableLinks,
+      zhipuKeyAction: settings.zhipuKeyAction,
+      zhipuKeyValue: settings.zhipuKeyValue ?? "",
+      openaiKeyAction: settings.openaiKeyAction,
+      openaiKeyValue: settings.openaiKeyValue ?? "",
+    },
+  });
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // TEMPORARY STUBS — skill IPC 链路在 main 上未接通（commit 184c6c0d 引入
 // 后端 commands/skills.rs + commands/skill_mcp.rs 与 SkillsView UI，但漏掉

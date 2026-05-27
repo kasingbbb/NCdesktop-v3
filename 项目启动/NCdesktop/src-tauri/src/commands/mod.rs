@@ -29,3 +29,6 @@ pub mod user_prompt;
 // custom_para_v1：PARA 自定义类目 CRUD command（PR-3 task_012 孤儿代码激活）。
 // list/create/rename/disable/delete + add_alias 共 6 个 IPC，本期仅注册不上 UI。
 pub mod categories;
+// task_020：KC 集成层 3 个 Tauri command（get_kc_health / restart_kc_process / set_kc_settings）。
+// 给前端 task_016 KcSettingsForm.tsx 提供 IPC 入口。
+pub mod kc;

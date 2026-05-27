@@ -348,6 +348,11 @@ pub fn run() {
             commands::categories::set_category_disabled,
             commands::categories::delete_category,
             commands::categories::add_category_alias,
+            // task_020：KC 集成 — health / restart / set_settings IPC。
+            // 前端 KcSettingsForm + 状态 banner 消费。
+            commands::kc::get_kc_health,
+            commands::kc::restart_kc_process,
+            commands::kc::set_kc_settings,
             #[cfg(debug_assertions)]
             source_scan::source_scan_get_missing,
         ])
