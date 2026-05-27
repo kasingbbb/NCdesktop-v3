@@ -1,9 +1,14 @@
 import { type DragEvent, useEffect, useState } from "react";
-import { GripHorizontal, MoveDiagonal2, X } from "lucide-react";
+import { GripHorizontal, MoveDiagonal2, Sparkles, X } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { useDropzoneStore, type DropzoneStore } from "../../../stores/dropzoneStore";
+import {
+  useKcQueueStore,
+  type KcEnrichedPayload,
+  type KcQueuedPayload,
+} from "../../../stores/kcQueueStore";
 import * as cmd from "../../../lib/tauri-commands";
 import { DropzoneIdle } from "./DropzoneIdle";
 import { DropzoneAttract } from "./DropzoneAttract";
@@ -186,12 +191,66 @@ export function DropzoneApp() {
       if (!cancelled) unlistenAI = fn;
     });
 
+    // task_025 AC-2：订阅 KC 队列起点 / 终点事件，drive kcQueueStore。
+    let unlistenKcQueued: (() => void) | undefined;
+    let unlistenKcEnriched: (() => void) | undefined;
+    void listen<KcQueuedPayload>("notecapt/asset-kc-queued", (event) => {
+      if (cancelled) return;
+      useKcQueueStore.getState().enqueue(event.payload.assetId);
+    }).then((fn) => {
+      if (!cancelled) unlistenKcQueued = fn;
+    });
+    void listen<KcEnrichedPayload>("notecapt/asset-kc-enriched", (event) => {
+      if (cancelled) return;
+      useKcQueueStore.getState().dequeue(event.payload.assetId);
+    }).then((fn) => {
+      if (!cancelled) unlistenKcEnriched = fn;
+    });
+
     return () => {
       cancelled = true;
       unlistenDrag?.();
       unlistenAI?.();
+      // task_025：组件 unmount 必须清理事件订阅（Reviewer 重点关注）
+      unlistenKcQueued?.();
+      unlistenKcEnriched?.();
     };
   }, [setState, addItem]);
+
+  // task_025 AC-3：KC 队列 toast 的"完成态"5s 窗口判定（用 50ms 间隔 tick state 触发 re-render）。
+  // 用 effect 内 setInterval 而非定时器订阅，window 切换 / 实测 jsdom 下都安全。
+  const [now, setNow] = useState(() => Date.now());
+  const kcQueueLength = useKcQueueStore((s) => s.kcQueueLength);
+  const kcCurrentAssetId = useKcQueueStore((s) => s.kcCurrentAssetId);
+  const kcLastCompletedAt = useKcQueueStore((s) => s.lastCompletedAt);
+  useEffect(() => {
+    if (kcQueueLength === 0 && kcLastCompletedAt === null) {
+      // 完全没在跑也没完成过 → 不需要 tick
+      return;
+    }
+    const id = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(id);
+  }, [kcQueueLength, kcLastCompletedAt]);
+
+  /** AC-3：派生 toast 形态 —— "running" / "done" / "hidden"。 */
+  const kcToast = (() => {
+    if (kcQueueLength > 0) {
+      return {
+        kind: "running" as const,
+        text: `AI 增强中 ${kcQueueLength}…`,
+        title: kcCurrentAssetId ? `当前: ${kcCurrentAssetId}` : "AI 增强进行中",
+      };
+    }
+    // 队列空 + 完成时间戳在 5s 内 → done toast 显示，3s 后消失（5-3=2s 是延迟窗，简洁起见用单一 5s）
+    if (kcLastCompletedAt !== null && now - kcLastCompletedAt < 5000) {
+      return {
+        kind: "done" as const,
+        text: "AI 增强完成",
+        title: "AI 增强已完成",
+      };
+    }
+    return null;
+  })();
 
   if (currentState === "hidden") return null;
 
@@ -302,6 +361,28 @@ export function DropzoneApp() {
             <div className="pointer-events-auto w-full max-w-[min(100%,380px)] min-h-0 flex flex-1">
               <DropzoneExpanded />
             </div>
+          </div>
+        )}
+
+        {/* task_025 AC-3：KC 队列 toast（悬浮在 dropzone 上方，z-40，不阻塞拖拽） */}
+        {kcToast && (
+          <div
+            data-testid="kc-queue-toast"
+            data-kind={kcToast.kind}
+            className="absolute top-10 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1.5 px-2.5 py-1 rounded-full pointer-events-none"
+            style={{
+              background: kcToast.kind === "running" ? "rgba(59,130,246,0.15)" : "rgba(34,197,94,0.18)",
+              border: `1px solid ${kcToast.kind === "running" ? "#3b82f6" : "#22c55e"}`,
+              color: kcToast.kind === "running" ? "#93c5fd" : "#86efac",
+              fontSize: 10,
+              fontWeight: 500,
+              boxShadow: "0 2px 8px rgba(0,0,0,0.25)",
+              transition: "opacity var(--duration-normal)",
+            }}
+            title={kcToast.title}
+          >
+            <Sparkles size={10} strokeWidth={2.5} />
+            <span>{kcToast.text}</span>
           </div>
         )}
 

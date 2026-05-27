@@ -207,6 +207,11 @@ pub async fn enrich(app: &AppHandle, asset: &Asset, raw_md: &str) -> KcEnrichmen
         persist: false, // ADR-006 层 1：永远 false
     };
 
+    // task_025：在 ingest 真实开始前 emit `notecapt/asset-kc-queued`，
+    // 让前端 toast 在依赖解析通过、即将真正占用 KC 时显示队列长度。
+    // 前置失败（!enabled / Unavailable）路径不 emit，避免噪音（已 fallthrough 到 enriched 事件）。
+    emit_kc_queued(app, &asset.id);
+
     let result = client.ingest_text(raw_md, &options).await;
 
     // ---- 步骤 5：Result 分流（5 类失败映射） ----
@@ -532,6 +537,31 @@ fn resolve_kc_dependencies(app: &AppHandle) -> Result<Arc<KcClient>, SpawnSkipRe
         Some(c) => Ok(c.inner().clone()),
         None => Err(SpawnSkipReason::NoKcClient),
     }
+}
+
+/// task_025：emit `notecapt/asset-kc-queued`（KC ingest 即将开始 → 前端 toast 队列计数 +1）。
+///
+/// payload schema（与 task_025 input.md AC-2 严格一致）：
+/// ```json
+/// { "assetId": "<asset.id>" }
+/// ```
+///
+/// **触发时机**：在 `client.ingest_text` 调用前一行，且仅在前置依赖解析（KcSettings.enabled
+/// 通过 + KcProcessManager Ready + KcClient 存在）全部通过时 emit；早期 Fallback（Disabled /
+/// Unavailable）路径不 emit `queued`，因为这些 asset 实际并未进入 KC 队列。前端订阅这个事件 +
+/// `notecapt/asset-kc-enriched`（开始 / 结束配对）即可维护队列长度。
+///
+/// **不影响落地**：emit 失败仅 `log::warn`，与 `emit_kc_enriched` 同保护策略。
+fn emit_kc_queued(app: &AppHandle, asset_id: &str) {
+    let payload = build_kc_queued_payload(asset_id);
+    if let Err(e) = app.emit("notecapt/asset-kc-queued", payload) {
+        log::warn!("[kc::enrich] emit notecapt/asset-kc-queued 失败: {e}");
+    }
+}
+
+/// 构造 `notecapt/asset-kc-queued` 的 payload（提取为纯函数以便单测覆盖 payload 字面）。
+fn build_kc_queued_payload(asset_id: &str) -> serde_json::Value {
+    serde_json::json!({ "assetId": asset_id })
 }
 
 /// emit `notecapt/asset-kc-enriched` 事件（AC-1 步骤 5）。
@@ -1063,6 +1093,32 @@ mod tests {
         assert_eq!(meta.doc_id, "doc-partial");
         assert_eq!(meta.kc_version, "unknown");
         assert_eq!(meta.paragraph_count, 0);
+    }
+
+    // =================================================================
+    // task_025：build_kc_queued_payload 字面对齐前端订阅
+    // =================================================================
+
+    /// 守护：`notecapt/asset-kc-queued` payload 必须严格是 `{"assetId": "<id>"}`，
+    /// 字段名为 `assetId`（驼峰，与 `notecapt/asset-kc-enriched` 一致），不含其他字段。
+    /// 前端 `kcQueueStore` 依此读 `payload.assetId` 维护队列长度。
+    #[test]
+    fn build_kc_queued_payload_has_correct_shape() {
+        let payload = build_kc_queued_payload("asset-xyz");
+        assert_eq!(payload["assetId"], serde_json::json!("asset-xyz"));
+        // 严格只有一个字段，防止未来无意识扩展 payload 导致前端 schema 漂移
+        let obj = payload.as_object().expect("payload should be object");
+        assert_eq!(obj.len(), 1, "payload 仅应含 assetId 字段，实际: {payload:?}");
+    }
+
+    /// 守护：不同 asset_id 产出独立 payload（不共享内部状态 / 不被缓存）。
+    #[test]
+    fn build_kc_queued_payload_per_asset_id() {
+        let p1 = build_kc_queued_payload("a-1");
+        let p2 = build_kc_queued_payload("a-2");
+        assert_ne!(p1, p2);
+        assert_eq!(p1["assetId"], serde_json::json!("a-1"));
+        assert_eq!(p2["assetId"], serde_json::json!("a-2"));
     }
 
     // =================================================================
