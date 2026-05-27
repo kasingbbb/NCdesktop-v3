@@ -1,9 +1,14 @@
-import { useEffect, useCallback, useState } from "react";
+import { useEffect, useCallback, useMemo, useState } from "react";
 import { FileText, Copy, RefreshCw, Sparkles, ChevronDown, ChevronRight } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { Asset } from "../../types";
 import { useExtractionStore } from "../../stores/extractionStore";
 import * as cmd from "../../lib/tauri-commands";
 import { ExtractionBadge } from "../features/extraction/ExtractionBadge";
+import { FrontmatterSummaryView } from "../features/extraction/FrontmatterSummaryView";
+import { FrontmatterTagsView } from "../features/extraction/FrontmatterTagsView";
+import { parseFrontmatter } from "../../utils/parseFrontmatter";
 import type { ExtractionStatus } from "../../types/extraction";
 
 interface InspectorExtractionProps {
@@ -55,6 +60,32 @@ function formatConversionMs(ms: number | null | undefined): string {
   return `${ms} ms`;
 }
 
+/**
+ * task_018 AC-2 / AC-6 (TD-4)：kc_enriched 字面 → 用户可见文案。
+ *
+ * **翻译层归属说明**：此翻译层故意落在 InspectorExtraction.tsx（业务表层），
+ * 而非 KcStatusBadge（task_021 / 视觉徽章）。两者职责分离：
+ * - KcStatusBadge 只关心 UX 状态 "success"/"failed"/"loading"/"idle"（task_021），
+ *   与底层 YAML 字面 "true"/"partial"/"false" 解耦，便于未来调度态 / 队列态复用。
+ * - 这里的 `kcEnrichedLabel` 负责"DB 字面值 → 用户中文文案"映射，
+ *   是 Inspector 业务展示的本地翻译，不应被 KcStatusBadge 吞掉。
+ *
+ * 返回 null 表示"该行不渲染"（历史数据 kc_enriched = null）。
+ */
+function kcEnrichedLabel(kcEnriched: string | null | undefined): string | null {
+  switch (kcEnriched) {
+    case "true":
+      return "AI 增强：完整";
+    case "partial":
+      return "AI 增强：仅规则标签（LLM 不可用）";
+    case "false":
+      return "未启用 AI 增强";
+    default:
+      // null / undefined / 任何未识别字面 —— 历史数据或脏数据，整行不显示
+      return null;
+  }
+}
+
 export function InspectorExtraction({ asset }: InspectorExtractionProps) {
   const {
     contentCache,
@@ -79,6 +110,18 @@ export function InspectorExtraction({ asset }: InspectorExtractionProps) {
   const status = (statusCache[asset.id] ?? content?.status ?? "pending") as ExtractionStatus;
   // 最新一行转换元数据（后端按 converted_at DESC 返回）
   const latestMeta = conversionMetaCache[asset.id]?.[0];
+
+  // task_018 AC-1：每次 asset 切换都重新 parseFrontmatter。
+  // 用 useMemo 把解析结果缓存在 structuredMd 字面值上 —— 同一 asset 多次 re-render 不会重复解析。
+  const parsed = useMemo(() => {
+    const md = content?.structuredMd;
+    if (typeof md !== "string" || md.length === 0) {
+      return { frontmatter: null, body: "", parseError: undefined as string | undefined };
+    }
+    return parseFrontmatter(md);
+  }, [content?.structuredMd]);
+  // 仅当 frontmatter 解析成功且 parseError 不存在时启用 markdown 视图；否则回退到 <pre>
+  const useFrontmatterView = parsed.frontmatter !== null && !parsed.parseError;
 
   const handleCopy = useCallback(async () => {
     const text = content?.rawText ?? content?.structuredMd;
@@ -236,15 +279,46 @@ export function InspectorExtraction({ asset }: InspectorExtractionProps) {
                   </button>
                 </div>
               </div>
-              <pre
-                className="text-[var(--text-xs)] leading-relaxed whitespace-pre-wrap break-words max-h-[240px] overflow-y-auto rounded-[var(--radius-sm)] p-2"
-                style={{
-                  color: "var(--text-primary)",
-                  background: "var(--surface-primary)",
-                }}
-              >
-                {content.structuredMd}
-              </pre>
+              {useFrontmatterView && parsed.frontmatter ? (
+                <div className="space-y-2" data-testid="frontmatter-view">
+                  <FrontmatterSummaryView
+                    summary={parsed.frontmatter.aiSummary}
+                    isAi={true}
+                  />
+                  <FrontmatterTagsView
+                    aiTags={parsed.frontmatter.aiTags}
+                    ruleTags={parsed.frontmatter.ruleTags}
+                  />
+                  <div
+                    className="markdown-body text-[var(--text-xs)] leading-relaxed break-words max-h-[240px] overflow-y-auto rounded-[var(--radius-sm)] p-2"
+                    style={{
+                      color: "var(--text-primary)",
+                      background: "var(--surface-primary)",
+                    }}
+                    data-testid="markdown-body"
+                  >
+                    {/*
+                      task_018 AC-1：用 react-markdown + remark-gfm 渲染正文。
+                      安全：react-markdown v9 默认禁用 raw HTML（不传 rehype-raw），
+                      用户写的 <script> 等 tag 不会被执行，等价于 allowDangerousHtml: false。
+                    */}
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {parsed.body}
+                    </ReactMarkdown>
+                  </div>
+                </div>
+              ) : (
+                <pre
+                  className="text-[var(--text-xs)] leading-relaxed whitespace-pre-wrap break-words max-h-[240px] overflow-y-auto rounded-[var(--radius-sm)] p-2"
+                  style={{
+                    color: "var(--text-primary)",
+                    background: "var(--surface-primary)",
+                  }}
+                  data-testid="pre-fallback"
+                >
+                  {content.structuredMd}
+                </pre>
+              )}
               {content.qualityLevel > 0 && (
                 <p
                   className="text-[10px]"
@@ -253,6 +327,20 @@ export function InspectorExtraction({ asset }: InspectorExtractionProps) {
                   质量：{qualityLabel(content.qualityLevel)}（{content.qualityLevel}） · 转换来源：{extractorLabel(content.extractorType)}
                 </p>
               )}
+              {(() => {
+                // task_018 AC-2：kc_enriched 字面映射 → 用户文案。null → 不渲染该行（历史数据）。
+                const kcLabel = kcEnrichedLabel(content.kcEnriched);
+                if (kcLabel === null) return null;
+                return (
+                  <p
+                    className="text-[10px]"
+                    style={{ color: "var(--text-tertiary)" }}
+                    data-testid="kc-enriched-label"
+                  >
+                    {kcLabel}
+                  </p>
+                );
+              })()}
               {latestMeta && (
                 <div className="space-y-1">
                   <p

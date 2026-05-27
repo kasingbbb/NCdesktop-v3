@@ -58,4 +58,23 @@ describe("FrontmatterTagsView", () => {
     render(<FrontmatterTagsView aiTags={[]} ruleTags={[]} />);
     expect(screen.getByText("（无标签）")).toBeInTheDocument();
   });
+
+  // task_018 AC-5（TD-2）：a11y
+  it("frontmatter_tags_view_uses_role_list — 根元素 role=list + 每个 chip role=listitem 且 aria-label 区分来源", () => {
+    render(<FrontmatterTagsView aiTags={["AI"]} ruleTags={["pdf"]} />);
+    // 根元素 role="list"
+    const root = screen.getByTestId("frontmatter-tags");
+    expect(root.getAttribute("role")).toBe("list");
+    expect(root.getAttribute("aria-label")).toBeTruthy();
+
+    // AI chip：role=listitem + aria-label 含 "AI 标签"
+    const aiChip = screen.getByText("#AI");
+    expect(aiChip.getAttribute("role")).toBe("listitem");
+    expect(aiChip.getAttribute("aria-label")).toMatch(/AI 标签/);
+
+    // 规则 chip：role=listitem + aria-label 含 "规则标签"
+    const ruleChip = screen.getByText("#pdf");
+    expect(ruleChip.getAttribute("role")).toBe("listitem");
+    expect(ruleChip.getAttribute("aria-label")).toMatch(/规则标签/);
+  });
 });

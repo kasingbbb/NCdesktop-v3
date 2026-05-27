@@ -40,10 +40,18 @@ export function FrontmatterTagsView({ aiTags, ruleTags }: FrontmatterTagsViewPro
   const dedupedRule = rule.filter((t) => !aiSet.has(t));
 
   return (
-    <div className="flex flex-wrap items-center gap-[var(--space-1)]" data-testid="frontmatter-tags">
+    // task_018 AC-5 (TD-2)：根元素 role="list" 让 SR 把整个标签条视为列表；
+    // 每个 tag chip role="listitem" + aria-label 区分 "AI 标签" / "规则标签" 来源。
+    <div
+      className="flex flex-wrap items-center gap-[var(--space-1)]"
+      data-testid="frontmatter-tags"
+      role="list"
+      aria-label="文档标签"
+    >
       <span
         className="text-[var(--text-xs)] mr-[var(--space-1)]"
         style={{ color: "var(--text-secondary)" }}
+        aria-hidden="true"
       >
         标签：
       </span>
@@ -54,6 +62,8 @@ export function FrontmatterTagsView({ aiTags, ruleTags }: FrontmatterTagsViewPro
           className="tag-pill"
           data-testid="tag-ai"
           data-source="ai"
+          role="listitem"
+          aria-label={`AI 标签 ${tag}`}
         >
           #{tag}
         </span>
@@ -66,6 +76,8 @@ export function FrontmatterTagsView({ aiTags, ruleTags }: FrontmatterTagsViewPro
           data-testid="tag-rule"
           data-source="rule"
           style={{ opacity: 0.85 }}
+          role="listitem"
+          aria-label={`规则标签 ${tag}`}
         >
           #{tag}
         </span>
