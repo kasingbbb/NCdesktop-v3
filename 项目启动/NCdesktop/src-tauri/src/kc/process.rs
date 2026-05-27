@@ -140,6 +140,11 @@ pub struct KcHealthStatus {
     pub last_check: DateTime<Utc>,
     /// 从 `Ready` 起累计秒数；非 Ready 状态返回 None。
     pub uptime_secs: Option<u64>,
+    /// **task_020b**：KC `/health` 响应的 `ai_enabled` 字段透传。
+    ///
+    /// 数据源：仅在 Ready 状态下、`single_health_request_with_ai_enabled` 解析 JSON
+    /// 成功且字段存在时为 `Some(bool)`；否则 `None`（前端按"未知"显示，参见 task_016 AC-7）。
+    pub ai_enabled: Option<bool>,
 }
 
 /// `PortProvider` trait（AC-2，task_007 KcClient 依赖此 trait 解耦）。
@@ -547,22 +552,24 @@ impl KcProcessManager {
         };
 
         // Ready 状态下额外发一次 HTTP 验证（健康检查的真实语义）。
-        let (final_status, reason) = if matches!(status, KcStatus::Ready) {
+        // **task_020b**：同时解析响应 body 的 `ai_enabled` 字段透传给 DTO。
+        let (final_status, reason, ai_enabled) = if matches!(status, KcStatus::Ready) {
             if let Some(p) = port {
-                if single_health_request(p).await {
-                    (status.clone(), None)
-                } else {
-                    // 单次失败不立刻降级（连续 3 次失败才标 Unavailable，那是上层 retry 的事）。
-                    // 这里仅报告"本次 health 请求 fail"，状态还保持 Ready。
-                    (status.clone(), Some("transient health request failure".to_string()))
+                match single_health_request_with_ai_enabled(p).await {
+                    Some(ai) => (status.clone(), None, ai),
+                    None => {
+                        // 单次失败不立刻降级（连续 3 次失败才标 Unavailable，那是上层 retry 的事）。
+                        // 这里仅报告"本次 health 请求 fail"，状态还保持 Ready；ai_enabled 不可知。
+                        (status.clone(), Some("transient health request failure".to_string()), None)
+                    }
                 }
             } else {
-                (status.clone(), Some("ready but no port recorded".to_string()))
+                (status.clone(), Some("ready but no port recorded".to_string()), None)
             }
         } else if let KcStatus::Unavailable(r) = &status {
-            (status.clone(), Some(r.clone()))
+            (status.clone(), Some(r.clone()), None)
         } else {
-            (status.clone(), None)
+            (status.clone(), None, None)
         };
 
         let uptime_secs = if matches!(final_status, KcStatus::Ready) {
@@ -577,6 +584,7 @@ impl KcProcessManager {
             port,
             last_check: Utc::now(),
             uptime_secs,
+            ai_enabled,
         }
     }
 
@@ -1093,6 +1101,30 @@ async fn single_health_request(port: u16) -> bool {
     matches!(client.get(&url).send().await, Ok(r) if r.status().is_success())
 }
 
+/// **task_020b**：单次 health 请求并解析 body 的 `ai_enabled` 字段。
+///
+/// 返回值语义（外层 health_check 据此构造 reason / ai_enabled）：
+/// - `Some(Some(bool))` → HTTP 200 且 body 含 `ai_enabled` 字段；
+/// - `Some(None)`       → HTTP 200 但 body 缺 `ai_enabled`（KC 旧版本兼容，外层走"未知"）；
+/// - `None`             → 请求失败 / 非 2xx / JSON 解析失败（外层走 transient failure 分支）。
+///
+/// 不替换 `single_health_request`：startup `poll_health_check` 不需要解析 body，
+/// 保持原函数零分配。
+async fn single_health_request_with_ai_enabled(port: u16) -> Option<Option<bool>> {
+    let url = format!("http://127.0.0.1:{port}/api/v1/health");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .ok()?;
+    let resp = client.get(&url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: serde_json::Value = resp.json().await.ok()?;
+    // body 解析成功就视为"健康请求成功"；ai_enabled 字段缺失时返回 Some(None)。
+    Some(body.get("ai_enabled").and_then(|v| v.as_bool()))
+}
+
 /// 轮询 health（AC-3 步骤 6）：每 `interval` 一次，最多 `max_attempts` 次，任一 200 → 返回 true。
 async fn poll_health_check(port: u16, interval: Duration, max_attempts: u32) -> bool {
     for _ in 0..max_attempts {
@@ -1560,6 +1592,84 @@ mod tests {
         assert_eq!(h.port, Some(mock_port));
         // reason 此时应当 None（真 health 请求成功）。
         assert!(h.reason.is_none(), "ready 状态下 reason 应为 None，实际: {:?}", h.reason);
+        // **task_020b**：mock body 含 ai_enabled=true → health.ai_enabled 应透传 Some(true)。
+        assert_eq!(
+            h.ai_enabled, Some(true),
+            "mock /health 返回 ai_enabled=true 应透传到 KcHealthStatus.ai_enabled"
+        );
+
+        std::env::remove_var("KC_USE_MOCK_PORT");
+        drop(server);
+    }
+
+    /// **task_020b 集成测试**：mock /health 缺 `ai_enabled` 字段 →
+    /// `KcHealthStatus.ai_enabled` 必为 None（前端按"未知"显示）。
+    ///
+    /// 兜底语义守护：KC 旧版本响应不破坏 health_check 整体路径，
+    /// 不让 ai_enabled 字段缺失阻断 Ready 状态判定。
+    #[tokio::test]
+    async fn health_check_returns_ai_enabled_none_when_field_missing() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+        // 起一个不含 ai_enabled 字段的 mock server
+        let server = MockServer::start().await;
+        let body = serde_json::json!({
+            "status": "ok",
+            "v1_ready": true,
+            // 故意缺 ai_enabled 字段
+        });
+        Mock::given(method("GET"))
+            .and(wm_path("/api/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+        let mock_port = server.address().port();
+
+        std::env::set_var("KC_USE_MOCK_PORT", mock_port.to_string());
+        let mgr = KcProcessManager::new_for_test();
+        mgr.start().await.expect("start should succeed");
+
+        let h = mgr.health_check().await;
+        assert_eq!(h.status, "ready", "字段缺失不应降级 ready 状态");
+        assert!(h.reason.is_none(), "字段缺失 reason 应仍 None: {:?}", h.reason);
+        assert_eq!(
+            h.ai_enabled, None,
+            "/health body 缺 ai_enabled 字段时 → None（前端按'未知'显示）"
+        );
+
+        std::env::remove_var("KC_USE_MOCK_PORT");
+        drop(server);
+    }
+
+    /// **task_020b 集成测试**：mock /health 返回 `ai_enabled=false` →
+    /// `KcHealthStatus.ai_enabled` 必为 `Some(false)`（与 `Some(true)` 都要区分于 `None`）。
+    ///
+    /// 守护 task_016 KcSettingsForm AC-7 三态判定（true / false / 未知）落地。
+    #[tokio::test]
+    async fn health_check_returns_ai_enabled_false_when_kc_reports_false() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+        let server = MockServer::start().await;
+        let body = serde_json::json!({
+            "status": "ok",
+            "ai_enabled": false,  // 显式 false：Key 配置但 AI 未启用
+            "v1_ready": true,
+        });
+        Mock::given(method("GET"))
+            .and(wm_path("/api/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+        let mock_port = server.address().port();
+
+        std::env::set_var("KC_USE_MOCK_PORT", mock_port.to_string());
+        let mgr = KcProcessManager::new_for_test();
+        mgr.start().await.expect("start should succeed");
+
+        let h = mgr.health_check().await;
+        assert_eq!(h.status, "ready");
+        assert_eq!(
+            h.ai_enabled, Some(false),
+            "ai_enabled=false 应透传 Some(false)（前端展示'Key 已配置但 AI 未启用'）"
+        );
 
         std::env::remove_var("KC_USE_MOCK_PORT");
         drop(server);

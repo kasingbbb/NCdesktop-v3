@@ -59,6 +59,13 @@ pub struct KcHealthStatusDto {
     pub uptime_secs: Option<u64>,
     /// 本次 health check 时间戳（RFC3339 字符串，便于前端 `new Date()` 解析）。
     pub last_check: String,
+    /// **task_020b**：KC `/health` 响应的 `ai_enabled` 字段（task_016 KcSettingsForm 测试连通性按钮判定 AI 就绪用）。
+    ///
+    /// - 数据源：KC Ready 状态下 `KcProcessManager::health_check` 实时发 `/api/v1/health`
+    ///   并解析响应 body 的 `ai_enabled` 字段透传（**非缓存**：每次 get_kc_health 都重新查）；
+    /// - 兜底：KC 不可达 / 非 2xx / JSON 解析失败 / KC 旧版本未返回此字段 → `None`，
+    ///   前端按"未知"显示（不显示判定，避免误导用户）。
+    pub ai_enabled: Option<bool>,
 }
 
 /// `set_kc_settings` 入参（AC-2）。
@@ -111,6 +118,7 @@ pub async fn get_kc_health(
         port: health.port,
         uptime_secs: health.uptime_secs,
         last_check: health.last_check.to_rfc3339(),
+        ai_enabled: health.ai_enabled,
     })
 }
 
@@ -412,6 +420,7 @@ mod tests {
             port: Some(58234),
             uptime_secs: Some(123),
             last_check: "2026-05-27T08:00:00Z".to_string(),
+            ai_enabled: Some(true),
         };
         let json = serde_json::to_string(&dto).expect("serialize ok");
         // 关键字段必须以 camelCase 出现（前端按 `dto.lastCheck` / `dto.uptimeSecs` 取值）
@@ -420,6 +429,7 @@ mod tests {
         // snake_case 不应出现
         assert!(!json.contains("uptime_secs"), "不应有 snake_case: {json}");
         assert!(!json.contains("last_check"), "不应有 snake_case: {json}");
+        assert!(!json.contains("ai_enabled"), "不应有 snake_case: {json}");
     }
 
     // ---------- set_kc_settings 核心逻辑：DB 写入 + Key 变化检测 ----------
@@ -572,12 +582,17 @@ mod tests {
             port: health.port,
             uptime_secs: health.uptime_secs,
             last_check: health.last_check.to_rfc3339(),
+            ai_enabled: health.ai_enabled,
         };
 
         // Stopped 状态默认
         assert_eq!(dto.status, "stopped", "test_only 构造默认为 Stopped");
         assert_eq!(dto.port, None, "无 KC 时 port 应为 None");
         assert_eq!(dto.uptime_secs, None, "非 Ready 状态 uptime 应为 None");
+        assert_eq!(
+            dto.ai_enabled, None,
+            "非 Ready 状态 ai_enabled 应为 None（无 /health 请求触发）"
+        );
 
         // last_check 必须为合法 RFC3339（含 'T' 与时区指示符 'Z' 或 '+'）
         assert!(
@@ -590,6 +605,7 @@ mod tests {
         let json = serde_json::to_string(&dto).expect("serialize");
         assert!(json.contains("\"lastCheck\""));
         assert!(json.contains("\"uptimeSecs\""));
+        assert!(json.contains("\"aiEnabled\""), "aiEnabled 应序列化为 camelCase");
     }
 
     // ---------- restart_kc_process：单测覆盖错误路径 ----------
@@ -668,6 +684,101 @@ mod tests {
         assert_eq!(
             db_settings::get(&conn, SETTING_KC_OPENAI_API_KEY).unwrap(),
             Some("sk-openai-fixture-9876".to_string())
+        );
+    }
+
+    // ---------- task_020b：ai_enabled 字段守护测试 ----------
+
+    /// **task_020b**：DTO 序列化必须把 `ai_enabled` 写成 camelCase `aiEnabled`，
+    /// 三种状态（true / false / None）都不丢字段。
+    #[test]
+    fn kc_health_dto_includes_ai_enabled_field_in_serialization() {
+        // Some(true) → "aiEnabled":true
+        let dto_true = KcHealthStatusDto {
+            status: "ready".to_string(),
+            reason: None,
+            port: Some(58234),
+            uptime_secs: Some(10),
+            last_check: "2026-05-28T00:00:00Z".to_string(),
+            ai_enabled: Some(true),
+        };
+        let json_true = serde_json::to_string(&dto_true).expect("serialize ok");
+        assert!(
+            json_true.contains("\"aiEnabled\":true"),
+            "Some(true) 应序列化为 aiEnabled:true，实际: {json_true}"
+        );
+        assert!(
+            !json_true.contains("ai_enabled"),
+            "不应出现 snake_case ai_enabled: {json_true}"
+        );
+
+        // Some(false) → "aiEnabled":false
+        let dto_false = KcHealthStatusDto {
+            ai_enabled: Some(false),
+            ..dto_true.clone()
+        };
+        let json_false = serde_json::to_string(&dto_false).expect("serialize ok");
+        assert!(
+            json_false.contains("\"aiEnabled\":false"),
+            "Some(false) 应序列化为 aiEnabled:false，实际: {json_false}"
+        );
+
+        // None → "aiEnabled":null（serde 默认对 Option<T> 不跳过 None）
+        let dto_none = KcHealthStatusDto {
+            ai_enabled: None,
+            ..dto_true.clone()
+        };
+        let json_none = serde_json::to_string(&dto_none).expect("serialize ok");
+        assert!(
+            json_none.contains("\"aiEnabled\":null"),
+            "None 应序列化为 aiEnabled:null（前端按未知处理），实际: {json_none}"
+        );
+    }
+
+    /// **task_020b**：前端 camelCase JSON 反序列化回 DTO 后 `ai_enabled` 字段语义正确，
+    /// 守护后续维护者改 rename_all 时不破坏前后端 round-trip 契约。
+    #[test]
+    fn kc_health_dto_deserializes_ai_enabled_from_camel_case() {
+        // aiEnabled=true
+        let json_t = r#"{
+            "status": "ready", "reason": null, "port": 1234,
+            "uptimeSecs": 5, "lastCheck": "2026-05-28T00:00:00Z",
+            "aiEnabled": true
+        }"#;
+        let dto: KcHealthStatusDto = serde_json::from_str(json_t).expect("deserialize ok");
+        assert_eq!(dto.ai_enabled, Some(true), "aiEnabled:true → Some(true)");
+
+        // aiEnabled=null（KC 旧版本兼容场景）
+        let json_n = r#"{
+            "status": "ready", "reason": null, "port": 1234,
+            "uptimeSecs": 5, "lastCheck": "2026-05-28T00:00:00Z",
+            "aiEnabled": null
+        }"#;
+        let dto_n: KcHealthStatusDto = serde_json::from_str(json_n).expect("deserialize null ok");
+        assert_eq!(dto_n.ai_enabled, None, "aiEnabled:null → None");
+    }
+
+    /// **task_020b**：Stopped 状态下 DTO `ai_enabled` 必为 None（不发 /health 请求，
+    /// 兜底语义"未知"）。这是与 task_016 KcSettingsForm 测试连通性按钮"非 ready → 错误"
+    /// 路径配对的后端守护。
+    #[tokio::test]
+    async fn kc_health_returns_ai_enabled_none_when_not_ready() {
+        // 不设 KC_USE_MOCK_PORT → 默认 Stopped。
+        let mgr = Arc::new(KcProcessManager::new_test_only_no_app());
+        let health = mgr.health_check().await;
+        // 直接复刻 command 内部 DTO 转换
+        let dto = KcHealthStatusDto {
+            status: health.status,
+            reason: health.reason,
+            port: health.port,
+            uptime_secs: health.uptime_secs,
+            last_check: health.last_check.to_rfc3339(),
+            ai_enabled: health.ai_enabled,
+        };
+        assert_eq!(dto.status, "stopped");
+        assert_eq!(
+            dto.ai_enabled, None,
+            "Stopped 状态不发 /health 请求，ai_enabled 必为 None"
         );
     }
 }
