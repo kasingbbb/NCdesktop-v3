@@ -10,6 +10,10 @@ pub mod workspace;
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod extraction;
+// task_005：KC（KnowledgeCompiler）HTTP 子进程集成模块。
+// 与 `extraction/` 平级。本 task 仅落骨架 + `kc/errors.rs` 类型契约；
+// 子进程管理 / HTTP 客户端 / enrichment step 由 task_007 ~ task_014 续接。
+pub mod kc;
 pub mod source_scan;
 // task_008（M-1 关闭）：scheduler::write_derivative_md 通过 crate::utils::safe_name
 // 引用 sanitize_stem。utils 目录中的文件早已存在但 lib.rs 未注册，与 scheduler
