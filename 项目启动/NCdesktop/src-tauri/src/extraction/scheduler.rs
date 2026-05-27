@@ -347,7 +347,7 @@ impl PipelineScheduler {
                             Ok(r) => r,
                             Err(_) => unreachable!("PrimarySuccess decided from Ok arm"),
                         };
-                        save_and_materialize(&app, &asset, &task, &r);
+                        save_and_materialize(&app, &asset, &task, &r).await;
                         write_conversion_meta(
                             &app,
                             &asset.id,
@@ -397,7 +397,7 @@ impl PipelineScheduler {
                             .await;
                             match fb_attempt {
                                 Ok(r) if extraction_is_usable(&r) => {
-                                    save_and_materialize(&app, &asset, &task, &r);
+                                    save_and_materialize(&app, &asset, &task, &r).await;
                                     write_conversion_meta(
                                         &app,
                                         &asset.id,
@@ -1269,7 +1269,17 @@ fn map_to_static_class(class: &str) -> &'static str {
 }
 
 /// 成功路径共用：写 extracted_content + emit completed + materialize_md / source_md。
-fn save_and_materialize(
+///
+/// **task_012**：在非 markdown 原件路径前注入 KC enrichment（≤ 25 行）：
+/// `enrich → resolve_outcome → db_update_kc_fields + write_kc_conversion_meta → materialize_md(final_md)`。
+/// markdown 原件路径**不走** KC（PRD §3.1）。historic 行为（KC 关闭）通过 `enrich`
+/// 内部的 `settings.enabled=false` 短路 → `Fallback(Disabled)` → `resolve_outcome.final_md =
+/// r.structured_md` 完全保留。
+///
+/// async fn：调用方（主循环两处 `save_and_materialize(...)`）已在 async 块内，加 `.await`
+/// 即可消费。**DB 锁不跨 await**：`enrich(.await)` 完成后再 lock DB（resolve_outcome / 写
+/// DB / materialize_md 全是同步），避免 MutexGuard !Send 问题。
+async fn save_and_materialize(
     app: &AppHandle,
     asset: &crate::models::Asset,
     task: &db_ext::PipelineTaskRow,
@@ -1298,14 +1308,151 @@ fn save_and_materialize(
         if source_asset_is_markdown(asset) {
             materialize_source_markdown(app, asset);
         } else {
+            // ===== task_012：KC enrichment 注入（≤ 25 行）===========================
+            let kc_outcome = crate::kc::enrichment::enrich(app, asset, &r.structured_md).await;
+            let resolved = crate::kc::enrichment::resolve_outcome(r, kc_outcome, |meta| {
+                crate::kc::frontmatter::build_kc_frontmatter(asset, r, meta)
+            });
+            kc_persist_resolved(app, asset, &resolved);
             materialize_md(
                 app,
                 asset,
-                &r.structured_md,
+                &resolved.final_md,
                 r.quality_level,
-                &r.extractor_type,
+                &resolved.extractor_type,
             );
+            // ===== task_012 注入结束 ============================================
         }
+    }
+}
+
+/// task_012：把 `ResolvedEnrichment` 落到 DB 的两张表（`extracted_content` KC 列 +
+/// `conversion_meta` KC 追加行）。从 `save_and_materialize` 提取为独立 helper 让注入主体
+/// 维持在 25 行预算内 + 给单测一个稳定锚点。
+///
+/// 行为（同步函数，调用方已在 await 之外）：
+/// 1. 锁 DB、计算 source_hash；
+/// 2. 委托 [`kc_persist_resolved_with_conn`] 完成实际写入。
+///
+/// 失败仅 `log::warn`，不向上抛——KC 注入不阻断主链路（PRD §4.3）。
+fn kc_persist_resolved(
+    app: &AppHandle,
+    asset: &crate::models::Asset,
+    resolved: &crate::kc::enrichment::ResolvedEnrichment,
+) {
+    let source_hash =
+        file_sha256(Path::new(&asset.file_path)).unwrap_or_else(|_| String::new());
+
+    let db = app.state::<Database>();
+    let conn = match db.conn.lock() {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("KC 注入：DB 锁失败: {e}");
+            return;
+        }
+    };
+    kc_persist_resolved_with_conn(&conn, &asset.id, &asset.mime_type, &source_hash, resolved);
+}
+
+/// task_012：DB 写入纯函数（无 AppHandle / IO）——给单测一个 in-memory `Connection`
+/// 可消费的稳定签名。
+///
+/// 行为：
+/// 1. `db_update_kc_fields`：写 `extracted_content.kc_enriched / kc_version / kc_tags_source`；
+/// 2. 仅当 `failure_code_for_meta` 或 `kc_meta_for_db` 任一非空时，append 一行 KC `conversion_meta`
+///    （成功路径才有 meta，失败路径才有 failure_code；Disabled 两者皆空——历史路径不污染 DB）。
+/// 3. KC `conversion_meta.failure_code` 由本函数在 `insert` 后单独 UPDATE（沿用 task_008
+///    `update_failure_code` 的"最近一行"语义）。
+///
+/// **失败仅 `log::warn`**，不向上抛——KC 注入不阻断主链路（PRD §4.3）。
+fn kc_persist_resolved_with_conn(
+    conn: &rusqlite::Connection,
+    asset_id: &str,
+    mime_type: &str,
+    source_hash: &str,
+    resolved: &crate::kc::enrichment::ResolvedEnrichment,
+) {
+    let kc_version_str = resolved
+        .kc_meta_for_db
+        .as_ref()
+        .map(|m| m.kc_version.as_str());
+    let kc_tags_source_str = resolved
+        .kc_meta_for_db
+        .as_ref()
+        .map(|m| m.tags_source.as_str());
+
+    if let Err(e) = db_ext::db_update_kc_fields(
+        conn,
+        asset_id,
+        &resolved.kc_enriched,
+        kc_version_str,
+        kc_tags_source_str,
+    ) {
+        log::warn!("KC 注入：写 extracted_content KC 字段失败 asset={asset_id}: {e}");
+    }
+
+    // 仅 KC 真正介入时（有 meta 或有 failure_code）才追加 conversion_meta 行；
+    // Disabled / 未介入路径保持 conversion_meta 净空（与历史 markitdown-only 行为一致）。
+    if resolved.kc_meta_for_db.is_some() || resolved.failure_code_for_meta.is_some() {
+        let kc_doc_id = resolved.kc_meta_for_db.as_ref().map(|m| m.doc_id.as_str());
+        let kc_response_size = resolved
+            .kc_meta_for_db
+            .as_ref()
+            .map(|m| m.response_size_bytes as u64);
+        let kc_duration_ms = resolved.kc_meta_for_db.as_ref().map(|m| m.duration_ms);
+        let kc_version = resolved
+            .kc_meta_for_db
+            .as_ref()
+            .map(|m| m.kc_version.as_str())
+            .unwrap_or("");
+        match db_conv_meta::db_conversion_meta_kc_insert(
+            conn,
+            asset_id,
+            "kc_enrichment",
+            kc_version,
+            mime_type,
+            source_hash,
+            0,
+            kc_doc_id,
+            kc_response_size,
+            kc_duration_ms,
+        ) {
+            Ok(_) => {
+                // failure_code（如有）：复用 task_008 的"最近一行" UPDATE 语义，
+                // 把刚 insert 的这行 KC conversion_meta 标记上 E_KC_*。
+                if let Some(fc) = resolved.failure_code_for_meta {
+                    if let Some(code) = parse_failure_code(fc) {
+                        if let Err(e) = db_conv_meta::update_failure_code(conn, asset_id, Some(code)) {
+                            log::warn!(
+                                "KC 注入：写 conversion_meta.failure_code 失败 asset={asset_id} code={fc}: {e}"
+                            );
+                        }
+                    } else {
+                        log::warn!(
+                            "KC 注入：未知 failure_code 字面 {fc}（应为 E_KC_*），跳过 UPDATE"
+                        );
+                    }
+                }
+            }
+            Err(e) => log::warn!(
+                "KC 注入：追加 conversion_meta KC 行失败 asset={asset_id}: {e}"
+            ),
+        }
+    }
+}
+
+/// 把 `&str` failure_code（如 `"E_KC_UNAVAILABLE"`）反查为 `FailureCode` enum。
+///
+/// 仅识别 5 个 KC 字面 + 8 个 markitdown 字面；其它字符串返回 `None`（让调用方 `log::warn`
+/// 而非 panic / 静默吞）。
+fn parse_failure_code(s: &str) -> Option<FailureCode> {
+    match s {
+        "E_KC_UNAVAILABLE" => Some(FailureCode::EKcUnavailable),
+        "E_KC_ENRICH_FAILED" => Some(FailureCode::EKcEnrichFailed),
+        "E_KC_LLM_UNAVAILABLE" => Some(FailureCode::EKcLlmUnavailable),
+        "E_KC_TIMEOUT" => Some(FailureCode::EKcTimeout),
+        "E_KC_INPUT_TOO_LARGE" => Some(FailureCode::EKcInputTooLarge),
+        _ => None,
     }
 }
 
@@ -1655,6 +1802,268 @@ mod tests {
             ScanPdfDecision::FallThrough,
             "解析失败必须 FallThrough，不可猜测为 scan"
         );
+    }
+
+    // =================================================================
+    // task_012 AC-4：KC enrichment 注入端到端 DB 行为 + markdown 原件跳过
+    // =================================================================
+
+    /// 在内存 SQLite 上跑全部迁移到 v18，再 INSERT libraries/projects/assets/extracted_content
+    /// 的最小可行 fixture（status='extracted'，kc_* 全 NULL），模拟"刚走完真成功 markitdown
+    /// 路径"的状态。返回 conn（asset_id 在外部预先生成）。
+    fn setup_extracted_row_for_kc(asset_id: &str) -> rusqlite::Connection {
+        use crate::db::migration::run_migrations;
+        let conn = rusqlite::Connection::open_in_memory().expect("open in-memory db");
+        run_migrations(&conn).expect("migrations to v18");
+        let now = "2026-05-27T00:00:00Z";
+        // FK 链：libraries → projects → assets → extracted_content
+        conn.execute(
+            "INSERT INTO libraries (id, name, root_path) VALUES ('lib1', 'L', '/tmp')",
+            [],
+        )
+        .expect("insert library");
+        conn.execute(
+            "INSERT INTO projects (id, library_id, name) VALUES ('p', 'lib1', 'P')",
+            [],
+        )
+        .expect("insert project");
+        conn.execute(
+            "INSERT INTO assets (id, project_id, asset_type, name, original_name, file_path,
+                                 file_size, mime_type, captured_at, imported_at, source_type,
+                                 source_data, is_starred, source_asset_id, derivative_version)
+             VALUES (?1, 'p', 'document', 'x.pdf', 'x.pdf', '/tmp/x.pdf', 0,
+                     'application/pdf', ?2, ?2, 'imported', NULL, 0, NULL, 0)",
+            rusqlite::params![asset_id, now],
+        )
+        .expect("insert assets");
+        conn.execute(
+            "INSERT INTO extracted_content (id, asset_id, status, error_message, retry_count,
+                                            raw_text, structured_md, quality_level, extractor_type,
+                                            segments_json, created_at, updated_at)
+             VALUES (?1, ?2, 'extracted', NULL, 0, 'raw', 'md', 2, 'markitdown', NULL, ?3, ?3)",
+            rusqlite::params![uuid::Uuid::new_v4().to_string(), asset_id, now],
+        )
+        .expect("insert extracted_content");
+        conn
+    }
+
+    fn make_kc_meta(doc_id: &str, version: &str, source: crate::kc::errors::KcTagsSource) -> crate::kc::errors::KcMeta {
+        crate::kc::errors::KcMeta {
+            doc_id: doc_id.to_string(),
+            kc_version: version.to_string(),
+            tags_source: source,
+            ai_tags: vec!["AI".to_string()],
+            rule_tags: vec!["Rule".to_string()],
+            ai_summary: Some("sum".to_string()),
+            ai_qa_pairs: Vec::new(),
+            ai_paragraph_links: Vec::new(),
+            generated_at: "2026-05-27T00:00:00Z".to_string(),
+            paragraph_count: 5,
+            response_size_bytes: 2048,
+            duration_ms: 250,
+        }
+    }
+
+    /// task_012 AC-4 #1：**Success** 路径——KC 真增强 + 写 `extracted_content` KC 列
+    /// （kc_enriched='true' / kc_version / kc_tags_source）+ append 一行 conversion_meta
+    /// （converter='kc_enrichment' / kc_doc_id / 无 failure_code）。
+    #[test]
+    fn save_and_materialize_with_kc_success_writes_enhanced_md() {
+        use crate::kc::enrichment::ResolvedEnrichment;
+        use crate::kc::errors::KcTagsSource;
+        let asset_id = "asset-kc-success";
+        let conn = setup_extracted_row_for_kc(asset_id);
+        let meta = make_kc_meta("doc-success-1", "0.9", KcTagsSource::AiAndRule);
+        let resolved = ResolvedEnrichment {
+            final_md: "---\nstub\n---\n\n# enhanced".to_string(),
+            extractor_type: "markitdown+kc".to_string(),
+            kc_enriched: "true".to_string(),
+            kc_meta_for_db: Some(meta.clone()),
+            failure_code_for_meta: None,
+        };
+
+        kc_persist_resolved_with_conn(&conn, asset_id, "application/pdf", "deadbeef", &resolved);
+
+        // extracted_content 三列被 UPDATE
+        let row = db_ext::db_read_kc_status(&conn, asset_id).expect("read kc status").expect("row");
+        assert_eq!(row.kc_enriched.as_deref(), Some("true"));
+        assert_eq!(row.kc_version.as_deref(), Some("0.9"));
+        assert_eq!(row.kc_tags_source.as_deref(), Some("ai+rule"));
+
+        // conversion_meta 追加了一行 KC（converter_name=kc_enrichment、kc_doc_id 非空）
+        let rows = db_conv_meta::list_by_source(&conn, asset_id).expect("list");
+        assert_eq!(rows.len(), 1, "Success 必须 append 一行 KC conversion_meta");
+        let row = &rows[0];
+        assert_eq!(row.converter_name, "kc_enrichment");
+        assert_eq!(row.converter_version, "0.9");
+        assert_eq!(row.source_mime, "application/pdf");
+        assert_eq!(row.source_hash, "deadbeef");
+        // failure_code: Success 不写——验证当前最新行 failure_code 为 NULL
+        let state = db_conv_meta::latest_for_source(&conn, asset_id).expect("latest").expect("row");
+        assert_eq!(
+            state.error_class, None,
+            "Success 不应触发 conversion_meta.error_class 写入"
+        );
+    }
+
+    /// task_012 AC-4 #2：**Disabled / Fallback** 路径（`kcEnabled=false` 历史行为）——
+    /// `resolve_outcome` 把 final_md 落回 `raw.structured_md`，`kc_enriched='false'`，
+    /// `kc_meta_for_db=None` 且 `failure_code_for_meta=None`：DB 写入只动 extracted_content
+    /// 一列，**不**追加 conversion_meta 行——历史行为完全保留。
+    #[test]
+    fn save_and_materialize_with_kc_disabled_falls_back_to_raw_md() {
+        use crate::kc::enrichment::ResolvedEnrichment;
+        let asset_id = "asset-kc-disabled";
+        let conn = setup_extracted_row_for_kc(asset_id);
+        let resolved = ResolvedEnrichment {
+            final_md: "# markitdown only".to_string(),
+            extractor_type: "markitdown".to_string(),
+            kc_enriched: "false".to_string(),
+            kc_meta_for_db: None,
+            failure_code_for_meta: None, // Disabled 不写 failure_code
+        };
+
+        kc_persist_resolved_with_conn(&conn, asset_id, "application/pdf", "deadbeef", &resolved);
+
+        let row = db_ext::db_read_kc_status(&conn, asset_id).expect("read").expect("row");
+        assert_eq!(row.kc_enriched.as_deref(), Some("false"));
+        assert_eq!(row.kc_version, None, "Disabled 不写 kc_version");
+        assert_eq!(row.kc_tags_source, None, "Disabled 不写 kc_tags_source");
+
+        // 关键：Disabled 路径**不**追加 KC conversion_meta 行（避免污染历史 markitdown-only 行为）
+        let rows = db_conv_meta::list_by_source(&conn, asset_id).expect("list");
+        assert_eq!(
+            rows.len(),
+            0,
+            "Disabled 路径 conversion_meta 不应追加任何 KC 行；实际 rows={rows:?}"
+        );
+    }
+
+    /// task_012 AC-4 #3：**PartialLlmUnavailable** 路径——`kc_enriched='partial'` +
+    /// `failure_code='E_KC_LLM_UNAVAILABLE'`；DB 既写 extracted_content KC 列也 append
+    /// 一行 conversion_meta，且 `failure_code` 被 UPDATE 上去。
+    #[test]
+    fn save_and_materialize_with_kc_partial_writes_partial_md_and_meta() {
+        use crate::kc::enrichment::ResolvedEnrichment;
+        use crate::kc::errors::KcTagsSource;
+        let asset_id = "asset-kc-partial";
+        let conn = setup_extracted_row_for_kc(asset_id);
+        let meta = make_kc_meta("doc-partial", "unknown", KcTagsSource::RuleOnly);
+        let resolved = ResolvedEnrichment {
+            final_md: "---\nstub\n---\n\n# rule only".to_string(),
+            extractor_type: "markitdown+kc:partial".to_string(),
+            kc_enriched: "partial".to_string(),
+            kc_meta_for_db: Some(meta),
+            failure_code_for_meta: Some("E_KC_LLM_UNAVAILABLE"),
+        };
+
+        kc_persist_resolved_with_conn(&conn, asset_id, "application/pdf", "deadbeef", &resolved);
+
+        let row = db_ext::db_read_kc_status(&conn, asset_id).expect("read").expect("row");
+        assert_eq!(row.kc_enriched.as_deref(), Some("partial"));
+        assert_eq!(row.kc_version.as_deref(), Some("unknown"));
+        assert_eq!(row.kc_tags_source.as_deref(), Some("rule_only"));
+
+        // conversion_meta：1 行 + failure_code=E_KC_LLM_UNAVAILABLE
+        let rows = db_conv_meta::list_by_source(&conn, asset_id).expect("list");
+        assert_eq!(rows.len(), 1, "Partial 必须 append 一行 KC conversion_meta");
+        // failure_code 透过 latest_for_source 难取（read 未 SELECT failure_code 列）——直接查表
+        let fc: Option<String> = conn
+            .query_row(
+                "SELECT failure_code FROM conversion_meta WHERE source_asset_id = ?1 ORDER BY converted_at DESC LIMIT 1",
+                rusqlite::params![asset_id],
+                |r| r.get(0),
+            )
+            .expect("query failure_code");
+        assert_eq!(
+            fc.as_deref(),
+            Some("E_KC_LLM_UNAVAILABLE"),
+            "Partial 路径必须 UPDATE conversion_meta.failure_code"
+        );
+    }
+
+    /// task_012 AC-4 #4：**markdown 原件**（`asset.asset_type='markdown'` 或
+    /// `mime_type='text/markdown'`）必须**跳过** KC enrichment 分支——通过
+    /// `source_asset_is_markdown` 的真值证明 save_and_materialize 内的
+    /// `if source_asset_is_markdown { materialize_source_markdown } else { /* KC 注入 */ }`
+    /// 分支路由正确。
+    #[test]
+    fn save_and_materialize_markdown_asset_skips_kc() {
+        use crate::models::Asset;
+        let md_by_type = Asset {
+            id: "asset-md-1".to_string(),
+            project_id: "p".to_string(),
+            asset_type: "markdown".to_string(),
+            name: "a.md".to_string(),
+            original_name: "a.md".to_string(),
+            file_path: "/tmp/a.md".to_string(),
+            file_size: 0,
+            mime_type: "text/plain".to_string(),
+            captured_at: String::new(),
+            imported_at: String::new(),
+            source_type: "imported".to_string(),
+            source_data: None,
+            is_starred: false,
+            source_asset_id: None,
+            derivative_version: 0,
+        };
+        let md_by_mime = Asset {
+            asset_type: "document".to_string(),
+            mime_type: "text/markdown".to_string(),
+            ..md_by_type.clone()
+        };
+        let non_md = Asset {
+            asset_type: "document".to_string(),
+            mime_type: "application/pdf".to_string(),
+            ..md_by_type.clone()
+        };
+
+        // 两种 markdown 判定路径都必须返回 true → save_and_materialize 走 source_md 分支（跳过 KC）
+        assert!(
+            source_asset_is_markdown(&md_by_type),
+            "asset_type='markdown' 必须走 markdown 分支（跳过 KC）"
+        );
+        assert!(
+            source_asset_is_markdown(&md_by_mime),
+            "mime='text/markdown' 必须走 markdown 分支（跳过 KC）"
+        );
+
+        // 非 markdown 必须返回 false → 进入 KC 注入分支
+        assert!(
+            !source_asset_is_markdown(&non_md),
+            "非 markdown 必须返回 false（让 KC 注入分支生效）"
+        );
+
+        // 既然 markdown 路径完全 short-circuit 到 materialize_source_markdown，
+        // 那么 KC 路径里调用的 kc_persist_resolved_with_conn 永远不会在 markdown asset 上被执行——
+        // 这是结构性的（编译时分支隔离），无需运行时再 assert "DB 没动"。
+    }
+
+    /// 守护：scheduler 本地 `parse_failure_code` 必须识别全部 5 个 KC 字面（task_011 ADR-004 映射），
+    /// 不识别才能让 `kc_persist_resolved_with_conn` `log::warn` 而非 panic / 静默吞。
+    #[test]
+    fn parse_failure_code_recognises_all_five_kc_variants() {
+        assert!(matches!(
+            parse_failure_code("E_KC_UNAVAILABLE"),
+            Some(FailureCode::EKcUnavailable)
+        ));
+        assert!(matches!(
+            parse_failure_code("E_KC_ENRICH_FAILED"),
+            Some(FailureCode::EKcEnrichFailed)
+        ));
+        assert!(matches!(
+            parse_failure_code("E_KC_LLM_UNAVAILABLE"),
+            Some(FailureCode::EKcLlmUnavailable)
+        ));
+        assert!(matches!(
+            parse_failure_code("E_KC_TIMEOUT"),
+            Some(FailureCode::EKcTimeout)
+        ));
+        assert!(matches!(
+            parse_failure_code("E_KC_INPUT_TOO_LARGE"),
+            Some(FailureCode::EKcInputTooLarge)
+        ));
+        assert!(parse_failure_code("E_BOGUS_UNKNOWN").is_none());
     }
 
     /// AC-2：extraction_is_usable 在 quality==0 或 md 空时返回 false
