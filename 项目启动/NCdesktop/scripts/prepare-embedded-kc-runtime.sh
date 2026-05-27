@@ -266,7 +266,25 @@ PYEOF
 cleanup_stage
 
 # ---- 体积报告 (AC-6) -------------------------------------------------------
-log "kc resource size:"
+log "kc resource size (before optimize):"
 du -sh "${KC_TARGET}"
+
+# ---- 可选: 调 task_028 optimize-kc-venv.sh 进一步剥离 ----------------------
+# task_028 配套 hook：PREP_KC_OPTIMIZE=1 时调 optimize-kc-venv.sh 剥离 venv
+# 至 ~80MB。默认关闭 — PM 可在 build-macos-dmg.sh 中显式启用。
+if [[ "${PREP_KC_OPTIMIZE:-0}" == "1" ]]; then
+  OPTIMIZE_SCRIPT="${SCRIPT_DIR}/optimize-kc-venv.sh"
+  if [[ -x "${OPTIMIZE_SCRIPT}" ]]; then
+    log "PREP_KC_OPTIMIZE=1: invoking optimize-kc-venv.sh"
+    if "${OPTIMIZE_SCRIPT}" "${KC_TARGET}/venv"; then
+      log "kc resource size (after optimize):"
+      du -sh "${KC_TARGET}"
+    else
+      log "WARN: optimize-kc-venv.sh failed; continuing with un-stripped venv"
+    fi
+  else
+    log "WARN: PREP_KC_OPTIMIZE=1 but optimize script missing/non-executable: ${OPTIMIZE_SCRIPT}"
+  fi
+fi
 
 log "Done. injected to ${KC_TARGET}"
