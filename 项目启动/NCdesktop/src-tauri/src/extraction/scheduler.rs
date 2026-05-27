@@ -1333,6 +1333,9 @@ fn write_conversion_meta(
         error_class: error_class.map(|s| s.to_string()),
         conversion_ms: None,
         converted_at: chrono::Utc::now().to_rfc3339(),
+        // task_015：KC enrichment 字段不在主转换链路（scheduler）写入路径；
+        // 由 enrichment 专用的 `db_conversion_meta_kc_insert` 单独追加行。
+        ..Default::default()
     };
 
     let db = app.state::<Database>();
