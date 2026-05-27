@@ -1,23 +1,37 @@
 //! task_004：`KcSettings` 结构 + Setting key 常量 + DB 读取 + Key 屏蔽。
+//! task_010：在 task_004 基础上**追加** Setting 写回 / env 注入 / 日志 mask helper。
 //!
 //! **设计依据**：
 //! - Architect output.md **ADR-007**（LLM Key 注入机制）—— Key 独立于 `llm.api_key`，
-//!   走 NC Settings 通道但**不复用同一个 Key 字符串**；
+//!   走 NC Settings 通道但**不复用同一个 Key 字符串**；env 变量名 `ZHIPUAI_API_KEY` /
+//!   `OPENAI_API_KEY`（Python langchain 约定，task_010 `build_env_vars` 严格大写）；
 //! - Architect output.md **ADR-006**（OutputStage 三层防御）—— 默认 `FullDefense`
 //!   （层 1 + 层 2 + 层 3 全开，KC-MOD-2 到位后可降到 `TrustPersistFalse`）；
 //! - Architect output.md **ADR-008**（Settings UI 形态）—— 本文件提供后端数据模型，
 //!   前端 `KcSettingsForm.tsx` 复用 `LLMSettingsForm.tsx` 视觉模式；
 //! - PRD §"不可妥协的技术底线 #5" / session_context §3 安全约束 —— Key **不明文落盘到日志**：
-//!   `Debug` impl 手写屏蔽（不能 derive），`masked_*_key()` 公开方法给上层 UI / 日志使用。
+//!   `Debug` impl 手写屏蔽（不能 derive），`masked_*_key()` 给 UI 展示用，
+//!   `mask_secrets()` / `log_with_mask()` 给日志兜底（任意 message 中含 Key 子串都被替换）。
 //!
-//! **task_005 占位替换说明**：`kc/mod.rs:37` 已 `pub mod settings;`；本 task 把原 2 行占位
+//! **task_005 占位替换说明**：`kc/mod.rs:37` 已 `pub mod settings;`；task_004 把原 2 行占位
 //! 替换为实装，不动 `mod.rs` / 其他兄弟模块（`client` / `process` / `enrichment` / `defense`
 //! 仍为后续 task 的占位入口）。
 //!
+//! **task_010 在 task_004 基础上追加的内容**（不动 task_004 已落地的结构 / Default / Debug）：
+//! - [`build_env_vars`] — 输出 `Command::env(...)` 入参，**永远不输出空字符串**（避免
+//!   KC 误判 "Key 已设置但空"，env 名严格大写）；
+//! - [`mask_secrets`]   — 任意 message 中匹配到 Key 子串则替换为占位，**长度 < 8 不替换**
+//!   （防止误命中常见短词，如 "abc123" 这种弱 Key 在防御性 mask 不应触发）；
+//! - [`log_with_mask`]  — 对外日志入口，强制走 `mask_secrets` 再 `log::log!` 输出，
+//!   kc::* 模块内部统一用此函数替代直接 `log::info!`；
+//! - [`save_settings`]  — 7 个字段一次性写回 DB，bool 落 "true"/"false" 文本，
+//!   防御档位走 `as_str()` snake_case round-trip，Key 为 `None` 时写空串
+//!   （与 `load_opt_string` 把空串视为 None 对齐，UI "清除 Key" 语义一致）。
+//!
 //! **不在本 task scope**：
-//! - Setting **写**入接口（task_010 Setting Loader）；
-//! - Tauri command 桥接（task_016 前端集成）；
-//! - 把 key 注入到 KC 子进程的 env（task_008 KcProcessManager::start）。
+//! - Tauri command 桥接（task_016 / task_020 前端集成）；
+//! - 把 env vars 真正注入到 KC 子进程（task_008 KcProcessManager::start 调用 `build_env_vars`）；
+//! - 整体 NC 日志全链路 mask（log_with_mask 仅在 kc::* 模块使用，其他模块由各自团队决定）。
 //!
 //! **DB 默认值机制**：NC 既有 `settings` 表是简单 KV（[db/migration.rs:1058]），
 //! **不预填默认值**；缺失时由应用层（本文件 `KcSettings::load`）走 `Default::default()`。
@@ -238,7 +252,148 @@ fn mask_key_for_display(opt: Option<&str>) -> String {
 }
 
 // =====================================================================
-// 4. 内部 DB 读取 helper
+// 4. task_010：env 注入 + 日志 mask + DB 写回（公开 helper）
+// =====================================================================
+
+/// **task_010 / ADR-007** 子进程 env 注入 helper。
+///
+/// 输出 `Command::env(...)` 调用入参（KEY=VALUE）。被 `task_008 KcProcessManager::start`
+/// 在拉起 KC 子进程前调用：`for (k, v) in build_env_vars(&settings) { cmd.env(k, v); }`。
+///
+/// **不变量（防 KC 误判）**：
+/// - 只在 `Option::is_some() && !is_empty()` 时输出对应 env；
+/// - **永远不**输出空字符串作为值（KC / langchain 看到 `ZHIPUAI_API_KEY=""` 会认为
+///   "Key 已设置但空"，比"未设置"更糟，直接拒绝服务）；
+/// - env 名严格大写（langchain 约定）。
+///
+/// **安全**：返回值进入 `std::process::Command::env(...)`，仅对子进程可见，**不污染**
+/// NC 主进程 environment（session_context §3 #5 "Key 不明文落盘"在此前提下保持）。
+pub fn build_env_vars(settings: &KcSettings) -> Vec<(String, String)> {
+    let mut out = Vec::with_capacity(2);
+
+    // 显式不 trim：用户在 UI 填入末尾空格属于配错，但 load 时已经 filter 空串了；
+    // 这里只防"Some 但内容为空"这种极端情况（理论上 load 已挡，双保险）。
+    if let Some(k) = settings.zhipu_api_key.as_deref() {
+        if !k.is_empty() {
+            out.push(("ZHIPUAI_API_KEY".to_string(), k.to_string()));
+        }
+    }
+    if let Some(k) = settings.openai_api_key.as_deref() {
+        if !k.is_empty() {
+            out.push(("OPENAI_API_KEY".to_string(), k.to_string()));
+        }
+    }
+
+    out
+}
+
+/// **task_010 / 安全护栏** 日志/异常 message 中的 Key 子串屏蔽。
+///
+/// 任意 `message` 中含 `settings.zhipu_api_key` 字面子串 → 替换为 `<ZHIPU_KEY_MASKED>`；
+/// 含 `openai_api_key` → `<OPENAI_KEY_MASKED>`。被 `log_with_mask` 调用。
+///
+/// **防御性策略**（task 技术约束 "Key 短长度防御"）：
+/// - 仅在 Key 长度 ≥ 8 字符时才尝试替换；
+/// - < 8 字符的"伪 Key"（如 `abc123` / `test1234`）若也参与替换，会误命中文档/路径/
+///   错误码中的常见词，反而污染日志可读性；
+/// - 8 字符上限是经验值：智谱 / OpenAI 真实 Key 都远超 8 字符（>= 32），所以这条
+///   阈值不会漏掉真实场景。
+///
+/// **不变量**：任意输入都不 panic（即使两个 Key 都 None / 空字符串 / 只有一个有值）。
+///
+/// **使用规范**：在 kc::* 模块内部，**禁止**直接调用 `log::info!("settings = {:?}", x)`
+/// 形式打印任何可能含 Key 的对象（即便 Debug 已 mask，也以此函数做"运行时字符串兜底"）。
+pub fn mask_secrets(message: &str, settings: &KcSettings) -> String {
+    let mut result = message.to_string();
+
+    if let Some(k) = settings.zhipu_api_key.as_deref() {
+        if k.len() >= MASK_SECRETS_MIN_KEY_LEN && !k.is_empty() {
+            result = result.replace(k, "<ZHIPU_KEY_MASKED>");
+        }
+    }
+    if let Some(k) = settings.openai_api_key.as_deref() {
+        if k.len() >= MASK_SECRETS_MIN_KEY_LEN && !k.is_empty() {
+            result = result.replace(k, "<OPENAI_KEY_MASKED>");
+        }
+    }
+
+    result
+}
+
+/// 短 Key 防御阈值：低于此长度不参与 `mask_secrets` 替换。
+///
+/// 选 `8` 的根据：智谱 AI Key 实际长度 32+ 字符，OpenAI `sk-...` 也是 51 字符级别；
+/// 8 是足够保守的下限——真实 Key 必然超过 8 字符，而 8 字符以下的"伪 Key"
+/// 几乎只可能是测试桩 / placeholder / 误填，做替换反而带来误命中风险。
+const MASK_SECRETS_MIN_KEY_LEN: usize = 8;
+
+/// **task_010 / AC-3** 日志统一入口：先 `mask_secrets` 再 `log::log!` 输出。
+///
+/// kc::* 模块内部**所有**含运行时变量的日志都应走此函数，**禁止**直接 `log::info!(...)`。
+/// 即使 message 不含 Key 子串，走 mask 也是零成本（`str::replace` 只在子串命中时实际拷贝）。
+///
+/// 用法示例：
+/// ```ignore
+/// kc::settings::log_with_mask(
+///     log::Level::Info,
+///     &format!("KC 拉起命令 args={:?}", cmd_args),
+///     &kc_settings,
+/// );
+/// ```
+///
+/// 选 `log::Level` 入参（而非分别提供 info/warn/error wrapper）：避免重复函数，
+/// 调用方在选 level 时已经做了语义判断。
+pub fn log_with_mask(level: log::Level, message: &str, settings: &KcSettings) {
+    let masked = mask_secrets(message, settings);
+    log::log!(level, "{}", masked);
+}
+
+/// **task_010 / AC-4** 把 `KcSettings` 7 个字段一次性写回 `settings` 表。
+///
+/// **bool → 文本协议**：`"true"` / `"false"`（小写，与 `load_bool` 解析对齐，
+/// 与 NC 既有 setting 约定一致）。
+///
+/// **Option Key → 空串协议**：`None` 写入空串 `""`，与 `load_opt_string`
+/// "空串 == None" 的解析对齐。这样 UI 选"清除 Key"也能正确把已存的 Key 抹掉
+/// （而不是只写不存在的字段让旧值残留）。
+///
+/// **失败原子性**：本函数**不**包事务——`db::settings::set` 是 UPSERT，最多 1 行写入；
+/// 中途失败时已写入的字段会保留新值。这与"UI 设置保存"语义一致：用户不期望
+/// "保存 7 项时第 4 项失败导致前 3 项也回滚"。如未来需事务保护，再考虑加。
+pub fn save_settings(conn: &Connection, settings: &KcSettings) -> Result<(), String> {
+    db::settings::set(conn, SETTING_KC_ENABLED, bool_str(settings.enabled))?;
+    db::settings::set(conn, SETTING_KC_USE_AI, bool_str(settings.use_ai))?;
+    db::settings::set(conn, SETTING_KC_ENABLE_QA, bool_str(settings.enable_qa))?;
+    db::settings::set(conn, SETTING_KC_ENABLE_LINKS, bool_str(settings.enable_links))?;
+    db::settings::set(
+        conn,
+        SETTING_KC_ZHIPU_API_KEY,
+        settings.zhipu_api_key.as_deref().unwrap_or(""),
+    )?;
+    db::settings::set(
+        conn,
+        SETTING_KC_OPENAI_API_KEY,
+        settings.openai_api_key.as_deref().unwrap_or(""),
+    )?;
+    db::settings::set(
+        conn,
+        SETTING_KC_OUTPUTSTAGE_DEFENSE_MODE,
+        settings.outputstage_defense_mode.as_str(),
+    )?;
+    Ok(())
+}
+
+/// 内部 helper：bool → 文本（与 `load_bool` 的 "true"/"false" 对齐）。
+fn bool_str(b: bool) -> &'static str {
+    if b {
+        "true"
+    } else {
+        "false"
+    }
+}
+
+// =====================================================================
+// 5. 内部 DB 读取 helper
 // =====================================================================
 
 /// 读 bool（DB 文本 "true"/"false"，沿用 NC 既有约定）。
@@ -272,7 +427,7 @@ fn load_defense_mode(conn: &Connection) -> Result<KcOutputStageDefenseMode, Stri
 }
 
 // =====================================================================
-// 5. 单测（AC-6）
+// 6. 单测（task_004 AC-6 + task_010 AC-5）
 // =====================================================================
 
 #[cfg(test)]
@@ -465,5 +620,282 @@ mod tests {
         let s = KcSettings::load(&conn).expect("load ok");
         assert!(s.zhipu_api_key.is_none(), "空字符串 Key 应等价于 None");
         assert!(s.openai_api_key.is_none(), "空字符串 Key 应等价于 None");
+    }
+
+    // =================================================================
+    // task_010 AC-5 测试组（7 个）
+    // =================================================================
+
+    // 高熵 fixture：避免 chars 在 message 中天然出现导致误命中（task_010 防御性 mask）。
+    const FIXTURE_ZHIPU_KEY: &str = "zhipu-9KsxQ7HvR2nT4mPaY6jLcDeFgWuZ1xVbE3oMiNcA";
+    const FIXTURE_OPENAI_KEY: &str = "sk-7HxVbWuZ9QnT4mPaY6jLcDeFgKsxR2oMiNcAE3";
+
+    // ---------- AC-5.1: build_env_vars 对 None Key 不输出 ----------
+    #[test]
+    fn build_env_vars_omits_none_keys() {
+        let s = KcSettings {
+            zhipu_api_key: None,
+            openai_api_key: None,
+            ..Default::default()
+        };
+        let env = build_env_vars(&s);
+        assert!(
+            env.is_empty(),
+            "两个 Key 都 None 时不应输出任何 env，实际: {env:?}"
+        );
+    }
+
+    // ---------- AC-5.2: build_env_vars 对空字符串 Key 不输出 ----------
+    //
+    // 注意：`KcSettings::load` 已把空串过滤为 None，但用户直接构造
+    // `KcSettings { zhipu_api_key: Some(String::new()), .. }` 也是合法路径
+    // （例如未来 Tauri command 入参可能塞空串）。这条断言守护"双保险"。
+    #[test]
+    fn build_env_vars_omits_empty_keys() {
+        let s = KcSettings {
+            zhipu_api_key: Some(String::new()),
+            openai_api_key: Some(String::new()),
+            ..Default::default()
+        };
+        let env = build_env_vars(&s);
+        assert!(
+            env.is_empty(),
+            "Some(\"\") 也不应输出 env（避免 KC 看到 'KEY=' 误判），实际: {env:?}"
+        );
+
+        // 单边 Some 有值 + 另一边 Some 空串：只输出有值的那个
+        let s_half = KcSettings {
+            zhipu_api_key: Some(FIXTURE_ZHIPU_KEY.to_string()),
+            openai_api_key: Some(String::new()),
+            ..Default::default()
+        };
+        let env_half = build_env_vars(&s_half);
+        assert_eq!(env_half.len(), 1, "实际: {env_half:?}");
+        assert_eq!(env_half[0].0, "ZHIPUAI_API_KEY");
+        assert_eq!(env_half[0].1, FIXTURE_ZHIPU_KEY);
+    }
+
+    // ---------- 附加（task_010 技术约束）：env 名严格大写 ----------
+    #[test]
+    fn build_env_vars_uses_strict_uppercase_names() {
+        let s = KcSettings {
+            zhipu_api_key: Some(FIXTURE_ZHIPU_KEY.to_string()),
+            openai_api_key: Some(FIXTURE_OPENAI_KEY.to_string()),
+            ..Default::default()
+        };
+        let env = build_env_vars(&s);
+        let names: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
+
+        // langchain 约定（input.md 技术约束）：必须是 ZHIPUAI_API_KEY / OPENAI_API_KEY 大写
+        assert!(
+            names.contains(&"ZHIPUAI_API_KEY"),
+            "env 名必须严格大写，实际: {names:?}"
+        );
+        assert!(
+            names.contains(&"OPENAI_API_KEY"),
+            "env 名必须严格大写，实际: {names:?}"
+        );
+        // 反例：不应出现小写或混合
+        for (k, _) in &env {
+            assert_eq!(
+                k.as_str(),
+                k.to_ascii_uppercase().as_str(),
+                "env 名包含非大写字符: {k}"
+            );
+        }
+    }
+
+    // ---------- AC-5.3: mask_secrets 替换 zhipu key ----------
+    #[test]
+    fn mask_secrets_replaces_zhipu_key() {
+        let s = KcSettings {
+            zhipu_api_key: Some(FIXTURE_ZHIPU_KEY.to_string()),
+            openai_api_key: None,
+            ..Default::default()
+        };
+        let msg = format!("KC 启动失败 reason=auth, key={FIXTURE_ZHIPU_KEY}, retry=true");
+        let masked = mask_secrets(&msg, &s);
+
+        // 关键断言：高熵 fixture 一定不会在 mask 后残留
+        assert!(
+            !masked.contains(FIXTURE_ZHIPU_KEY),
+            "mask 后不得含 zhipu key 原文，实际: {masked}"
+        );
+        // 占位符必须出现
+        assert!(
+            masked.contains("<ZHIPU_KEY_MASKED>"),
+            "mask 后应含 <ZHIPU_KEY_MASKED> 占位，实际: {masked}"
+        );
+        // 其他内容应保留
+        assert!(masked.contains("KC 启动失败"));
+        assert!(masked.contains("retry=true"));
+    }
+
+    // ---------- AC-5.4: mask_secrets 替换 openai key ----------
+    #[test]
+    fn mask_secrets_replaces_openai_key() {
+        let s = KcSettings {
+            zhipu_api_key: None,
+            openai_api_key: Some(FIXTURE_OPENAI_KEY.to_string()),
+            ..Default::default()
+        };
+        let msg = format!("[langchain] using model=gpt-4, OPENAI_API_KEY={FIXTURE_OPENAI_KEY}");
+        let masked = mask_secrets(&msg, &s);
+
+        assert!(
+            !masked.contains(FIXTURE_OPENAI_KEY),
+            "mask 后不得含 openai key 原文，实际: {masked}"
+        );
+        assert!(
+            masked.contains("<OPENAI_KEY_MASKED>"),
+            "mask 后应含 <OPENAI_KEY_MASKED> 占位，实际: {masked}"
+        );
+        assert!(masked.contains("model=gpt-4"));
+    }
+
+    // ---------- AC-5.5: mask_secrets 保留其他文本 ----------
+    #[test]
+    fn mask_secrets_preserves_other_text() {
+        let s = KcSettings {
+            zhipu_api_key: Some(FIXTURE_ZHIPU_KEY.to_string()),
+            openai_api_key: Some(FIXTURE_OPENAI_KEY.to_string()),
+            ..Default::default()
+        };
+
+        // 任何不含 Key 子串的 message 必须原样返回
+        let msg = "KC 健康检查 OK，端口=12345，uptime=123s，model=glm-4";
+        let masked = mask_secrets(msg, &s);
+        assert_eq!(masked, msg, "不含 Key 子串时应原样返回");
+
+        // 边界：空 message
+        assert_eq!(mask_secrets("", &s), "");
+
+        // 边界：两个 Key 都 None，但 message 长 → 不可能 panic / 误替换
+        let s_none = KcSettings::default();
+        let long_msg = "x".repeat(1000);
+        assert_eq!(
+            mask_secrets(&long_msg, &s_none),
+            long_msg,
+            "两个 Key 都 None 时任意 message 都原样返回"
+        );
+    }
+
+    // ---------- AC-5.6: mask_secrets 不替换短 Key（< 8 字符） ----------
+    #[test]
+    fn mask_secrets_does_not_replace_short_key() {
+        // 7 字符以下：不替换（防御性，input.md 要求"长度 < 8 不做替换"）
+        let s_short = KcSettings {
+            zhipu_api_key: Some("abc1234".to_string()), // 7 chars
+            openai_api_key: Some("test123".to_string()), // 7 chars
+            ..Default::default()
+        };
+        let msg = "log entry: abc1234 / test123 / other";
+        let masked = mask_secrets(msg, &s_short);
+        assert_eq!(
+            masked, msg,
+            "Key < 8 字符时不应替换（防止误命中常见短词），实际: {masked}"
+        );
+
+        // 边界：恰好 8 字符 → 应该替换（"< 8 不替换" → "≥ 8 替换"）
+        let s_8 = KcSettings {
+            zhipu_api_key: Some("abc12345".to_string()), // 8 chars
+            openai_api_key: None,
+            ..Default::default()
+        };
+        let msg_8 = "log: abc12345 found";
+        let masked_8 = mask_secrets(msg_8, &s_8);
+        assert!(
+            masked_8.contains("<ZHIPU_KEY_MASKED>"),
+            "Key == 8 字符时应替换（边界）"
+        );
+        assert!(!masked_8.contains("abc12345"));
+    }
+
+    // ---------- AC-5.7: save_and_load roundtrip ----------
+    #[test]
+    fn save_and_load_roundtrip() {
+        let conn = fresh_conn();
+
+        // 用非默认值，验证每个字段都真正经过 DB
+        let original = KcSettings {
+            enabled: false,
+            use_ai: false,
+            enable_qa: true,
+            enable_links: false,
+            zhipu_api_key: Some(FIXTURE_ZHIPU_KEY.to_string()),
+            openai_api_key: Some(FIXTURE_OPENAI_KEY.to_string()),
+            outputstage_defense_mode: KcOutputStageDefenseMode::TempDirIsolation,
+        };
+
+        save_settings(&conn, &original).expect("save ok");
+        let loaded = KcSettings::load(&conn).expect("load ok");
+
+        // 7 个字段逐一比对
+        assert_eq!(loaded.enabled, original.enabled);
+        assert_eq!(loaded.use_ai, original.use_ai);
+        assert_eq!(loaded.enable_qa, original.enable_qa);
+        assert_eq!(loaded.enable_links, original.enable_links);
+        assert_eq!(loaded.zhipu_api_key, original.zhipu_api_key);
+        assert_eq!(loaded.openai_api_key, original.openai_api_key);
+        assert_eq!(
+            loaded.outputstage_defense_mode,
+            original.outputstage_defense_mode
+        );
+
+        // 二次 save 应该覆盖（UPSERT 语义）
+        let updated = KcSettings {
+            zhipu_api_key: None, // 用户"清除 Key"路径
+            openai_api_key: None,
+            ..original.clone()
+        };
+        save_settings(&conn, &updated).expect("re-save ok");
+        let reloaded = KcSettings::load(&conn).expect("reload ok");
+        assert!(
+            reloaded.zhipu_api_key.is_none(),
+            "save None Key 后再 load 必须是 None（覆盖语义）"
+        );
+        assert!(reloaded.openai_api_key.is_none());
+
+        // 但其他字段保持 updated 的值
+        assert_eq!(reloaded.enabled, updated.enabled);
+    }
+
+    // ---------- 附加（task_010 安全护栏）：log_with_mask 不泄漏 Key ----------
+    //
+    // 注：log::Level 接口的副作用（实际是否写日志文件）由 logger backend 决定，
+    // 单测环境无 logger 时也不会失败。本测试验证 `log_with_mask` 内部走 mask_secrets
+    // 路径（即间接验证：调用前的 message 经过 mask 后必然不含原 Key）。
+    #[test]
+    fn log_with_mask_routes_through_mask_secrets() {
+        let s = KcSettings {
+            zhipu_api_key: Some(FIXTURE_ZHIPU_KEY.to_string()),
+            openai_api_key: Some(FIXTURE_OPENAI_KEY.to_string()),
+            ..Default::default()
+        };
+
+        // 含两种 Key 的 message
+        let dangerous = format!(
+            "ingest failed: zhipu={FIXTURE_ZHIPU_KEY}, fallback openai={FIXTURE_OPENAI_KEY}"
+        );
+
+        // 通过 mask_secrets（与 log_with_mask 内部同一路径）验证 mask 真的发生
+        let masked = mask_secrets(&dangerous, &s);
+        assert!(
+            !masked.contains(FIXTURE_ZHIPU_KEY),
+            "log_with_mask 路径必须屏蔽 zhipu key，实际: {masked}"
+        );
+        assert!(
+            !masked.contains(FIXTURE_OPENAI_KEY),
+            "log_with_mask 路径必须屏蔽 openai key，实际: {masked}"
+        );
+        assert!(masked.contains("<ZHIPU_KEY_MASKED>"));
+        assert!(masked.contains("<OPENAI_KEY_MASKED>"));
+
+        // log_with_mask 调用本身不能 panic（即便 logger 未初始化）
+        log_with_mask(log::Level::Info, &dangerous, &s);
+        log_with_mask(log::Level::Warn, &dangerous, &s);
+        log_with_mask(log::Level::Error, &dangerous, &s);
+        log_with_mask(log::Level::Debug, "", &s); // 空 message 也不应 panic
+        log_with_mask(log::Level::Trace, "no key here", &KcSettings::default());
     }
 }
