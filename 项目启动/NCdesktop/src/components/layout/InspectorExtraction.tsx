@@ -1,7 +1,8 @@
 import { useEffect, useCallback, useState } from "react";
-import { FileText, Copy, RefreshCw, ChevronDown, ChevronRight } from "lucide-react";
+import { FileText, Copy, RefreshCw, Sparkles, ChevronDown, ChevronRight } from "lucide-react";
 import type { Asset } from "../../types";
 import { useExtractionStore } from "../../stores/extractionStore";
+import * as cmd from "../../lib/tauri-commands";
 import { ExtractionBadge } from "../features/extraction/ExtractionBadge";
 import type { ExtractionStatus } from "../../types/extraction";
 
@@ -95,6 +96,34 @@ export function InspectorExtraction({ asset }: InspectorExtractionProps) {
     void retryExtraction(asset.id);
   }, [asset.id, retryExtraction]);
 
+  // task_026 AC-3：Inspector "重新增强"按钮 —— 调 retriggerExtraction(asset.id, true)
+  // 强制清 kc_enriched 让 task_012 enrichment 重跑。
+  // 显隐条件由 `showReEnrichButton` 计算（见下）。
+  const [reEnriching, setReEnriching] = useState(false);
+  const handleReEnrich = useCallback(async () => {
+    if (reEnriching) return;
+    setReEnriching(true);
+    try {
+      await cmd.retriggerExtraction(asset.id, true);
+      // 拉一次最新状态（kc_enriched 已被清，UI 应隐藏按钮直到重 enrich 完成回填）
+      void fetchExtractedContent(asset.id);
+    } catch (err) {
+      console.error("重新增强失败:", err);
+    } finally {
+      setReEnriching(false);
+    }
+  }, [asset.id, reEnriching, fetchExtractedContent]);
+
+  // AC-3 显隐：
+  // - asset_type='md' 不显示（不能误触发对 markdown 原件的 KC）
+  // - extracted_content.kcEnriched 必须非 null 且非 "false"
+  //   （null = 未做过 KC，"false" = enrich 失败 —— 都不允许"重新增强"
+  //   只允许"true"/"partial" 强制重跑）。
+  const showReEnrichButton =
+    asset.assetType !== "md" &&
+    !!content?.kcEnriched &&
+    content.kcEnriched !== "false";
+
   return (
     <div className="mb-[var(--space-4)]">
       <button
@@ -180,15 +209,32 @@ export function InspectorExtraction({ asset }: InspectorExtractionProps) {
                 >
                   Markdown 预览
                 </span>
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-1 text-[var(--text-xs)] px-1.5 py-0.5 rounded-[var(--radius-sm)] transition-colors hover:bg-[var(--surface-tertiary)]"
-                  style={{ color: "var(--text-secondary)" }}
-                  onClick={handleCopy}
-                >
-                  <Copy size={11} />
-                  {copied ? "已复制" : "复制"}
-                </button>
+                <div className="inline-flex items-center gap-1">
+                  {showReEnrichButton && (
+                    <button
+                      type="button"
+                      data-testid="re-enrich-button"
+                      aria-label="重新增强"
+                      title="重新增强 / Re-enhance with KC"
+                      className="inline-flex items-center gap-1 text-[var(--text-xs)] px-1.5 py-0.5 rounded-[var(--radius-sm)] transition-colors hover:bg-[var(--surface-tertiary)] disabled:opacity-50"
+                      style={{ color: "var(--text-secondary)" }}
+                      onClick={handleReEnrich}
+                      disabled={reEnriching}
+                    >
+                      <Sparkles size={11} />
+                      {reEnriching ? "重新增强中…" : "重新增强"}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 text-[var(--text-xs)] px-1.5 py-0.5 rounded-[var(--radius-sm)] transition-colors hover:bg-[var(--surface-tertiary)]"
+                    style={{ color: "var(--text-secondary)" }}
+                    onClick={handleCopy}
+                  >
+                    <Copy size={11} />
+                    {copied ? "已复制" : "复制"}
+                  </button>
+                </div>
               </div>
               <pre
                 className="text-[var(--text-xs)] leading-relaxed whitespace-pre-wrap break-words max-h-[240px] overflow-y-auto rounded-[var(--radius-sm)] p-2"

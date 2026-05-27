@@ -16,6 +16,10 @@ pub struct ExtractedContentRow {
     pub quality_level: i32,
     pub extractor_type: String,
     pub segments_json: Option<String>,
+    /// task_026 AC-3：KC 增强标志（V18 列），暴露给前端 Inspector 做"重新增强"
+    /// 按钮的显隐判断。NULL = 未走过 KC、"true" = enrich 成功、"false" = enrich
+    /// 失败、"partial" = LLM 不可用规则兜底（task_011 PartialLlmUnavailable）。
+    pub kc_enriched: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -51,7 +55,7 @@ pub fn get_extracted_content(
 ) -> Result<Option<ExtractedContentRow>, String> {
     conn.query_row(
         "SELECT id, asset_id, status, error_message, retry_count, raw_text, structured_md,
-                quality_level, extractor_type, segments_json, created_at, updated_at
+                quality_level, extractor_type, segments_json, kc_enriched, created_at, updated_at
          FROM extracted_content WHERE asset_id = ?1",
         params![asset_id],
         |row| {
@@ -66,8 +70,9 @@ pub fn get_extracted_content(
                 quality_level: row.get(7)?,
                 extractor_type: row.get(8)?,
                 segments_json: row.get(9)?,
-                created_at: row.get(10)?,
-                updated_at: row.get(11)?,
+                kc_enriched: row.get(10)?,
+                created_at: row.get(11)?,
+                updated_at: row.get(12)?,
             })
         },
     )

@@ -51,6 +51,10 @@ impl PipelineScheduler {
                 quality_level: 0,
                 extractor_type: String::new(),
                 segments_json: None,
+                // task_026：新增 row struct 字段；初始 pending 行尚未走 KC，None
+                // 即表"未 enrich"。`insert_extracted_content` SQL 未列 kc_enriched，
+                // SQLite ALTER TABLE 默认 NULL，与 None 一致。
+                kc_enriched: None,
                 created_at: now.clone(),
                 updated_at: now.clone(),
             })?;

@@ -9,6 +9,13 @@ export interface ExtractedContent {
   qualityLevel: number;
   extractorType: string;
   segmentsJson: string | null;
+  /**
+   * task_026 AC-3：KC 增强状态。null = 未走 KC、"true" = enrich 成功、
+   * "false" = enrich 失败、"partial" = LLM 不可用规则兜底（task_011
+   * PartialLlmUnavailable）。Inspector "重新增强"按钮仅在非 null && 非 "false"
+   * 时显示（即 KC 已经介入过该 asset 才允许强制重 enrich）。
+   */
+  kcEnriched: string | null;
   createdAt: string;
   updatedAt: string;
 }

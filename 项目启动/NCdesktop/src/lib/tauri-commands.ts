@@ -730,11 +730,22 @@ export async function getConversionMeta(assetId: string): Promise<ConversionMeta
   return invoke<ConversionMetaRow[]>("get_conversion_meta", { assetId });
 }
 
-// ── 提取重试（task_011）────────────────────────────────────────────────────
+// ── 提取重试（task_011 / task_026）─────────────────────────────────────────
 // 后端 `retrigger_extraction`：从 failed/extracted 任一态干净重跑；
 // 命中 queued/extracting 时安全 noop（后端幂等）。
-export async function retriggerExtraction(assetId: string): Promise<void> {
-  return invoke<void>("retrigger_extraction", { assetId });
+//
+// task_026 AC-1：新增 `forceKcRefresh` 可选参数（默认 false）。
+// - false / 缺省：与 task_011 旧行为完全一致（reset extracted_content / pipeline_tasks
+//   → enqueue → 唤醒 scheduler，markitdown 重跑会拉到当前 kc_enriched 值，已 enrich
+//   过的 asset 不会重新跑 KC）。
+// - true：在 reset 之后额外把 extracted_content.kc_enriched 置 NULL，
+//   让 task_012 注入的 enrichment 在 save_and_materialize 时重新跑 KC。
+//   仅用于 Inspector "重新增强"按钮（task_026 AC-3），不影响其他调用方。
+export async function retriggerExtraction(
+  assetId: string,
+  forceKcRefresh?: boolean,
+): Promise<void> {
+  return invoke<void>("retrigger_extraction", { assetId, forceKcRefresh });
 }
 
 // ── 提取流水线查询/触发（与 extractionStore 对齐）─────────────────────────
