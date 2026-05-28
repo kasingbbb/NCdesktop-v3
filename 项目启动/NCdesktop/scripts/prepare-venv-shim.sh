@@ -26,6 +26,9 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${PROJECT_ROOT}"
 
 SHIM_DIR="src-tauri/resources/markitdown-venv/bin"
+SHIM_PARENT="src-tauri/resources/markitdown-venv"
+LIB_SYMLINK="${SHIM_PARENT}/lib"
+LIB_TARGET_REL="../python/lib"   # macOS dyld @executable_path/../lib 解析锚点（2026-05-28 真机修复）
 PYTHON_TARGET_REL="../../python/bin/python3.12"
 PYTHON_ABS="src-tauri/resources/python/bin/python3.12"
 
@@ -59,6 +62,20 @@ else
     echo "created shim symlinks under ${SHIM_DIR}/"
 fi
 
+# 2026-05-28 真机打包修复：dyld 解析 @executable_path 用 symlink 路径
+# （markitdown-venv/bin/python）找 ../lib/libpython3.12.dylib → markitdown-venv/lib/libpython3.12.dylib
+# 不存在 → SIGKILL。修：在 markitdown-venv/ 加 lib symlink 指向 ../python/lib。
+if [[ -L "${LIB_SYMLINK}" ]]; then
+    existing_lib_link="$(readlink "${LIB_SYMLINK}")"
+    if [[ "${existing_lib_link}" != "${LIB_TARGET_REL}" ]]; then
+        ln -snf "${LIB_TARGET_REL}" "${LIB_SYMLINK}"
+        echo "updated lib symlink: ${LIB_SYMLINK} -> ${LIB_TARGET_REL}"
+    fi
+elif [[ ! -e "${LIB_SYMLINK}" ]]; then
+    ln -snf "${LIB_TARGET_REL}" "${LIB_SYMLINK}"
+    echo "created lib symlink: ${LIB_SYMLINK} -> ${LIB_TARGET_REL}"
+fi
+
 # AC-4 self-check: confirm both symlinks are RELATIVE (no leading /).
 for link_name in python python3; do
     link_path="${SHIM_DIR}/${link_name}"
@@ -89,9 +106,13 @@ while IFS= read -r entry; do
 done < <(find "${SHIM_DIR}" -mindepth 1 -maxdepth 1)
 
 # Also ensure no stray files at the parent shim root (e.g. pyvenv.cfg).
+# 例外：`lib` symlink → ../python/lib（2026-05-28 dyld 修复，允许存在）。
 while IFS= read -r entry; do
     base="$(basename "${entry}")"
     if [[ "${base}" == "bin" ]]; then
+        continue
+    fi
+    if [[ "${base}" == "lib" && -L "${entry}" ]]; then
         continue
     fi
     unexpected+=("${entry}")
