@@ -54,11 +54,20 @@ markdown-it-py>=3.0.0,<4
 jieba>=0.42.1,<1
 tiktoken
 pyyaml>=6.0.0,<7
+jinja2>=3.1.0,<4
+
+# ---- pipeline_b_semantic 语义聚类 + ANN 索引（PM 方案 A 2026-05-28 ESCALATE 后加）-
+# 真机打包发现 KC notecapt/pipelines/pipeline_b_semantic 主链路强依赖。
+# task_001 Architect 调研把这些当 demo 排除是错的；PM 决定放宽 PRD §6 至 ~150MB
+# 接受 v1.0 完整 KC 功能；详见 acceptance/v1.0_acceptance_report.md ESCALATE 段。
+numpy>=2.0.0,<3              # +14MB; pipeline_b embedding 向量计算必需
+scipy>=1.13.0,<2             # +27MB; hdbscan 传递依赖（密度聚类）
+faiss-cpu>=1.8.0,<2          # +4.4MB; ANN 索引（pipeline_b cross_doc_linker）
+hdbscan>=0.8.40,<1           # +2.5MB; 密度聚类（pipeline_b clusterer）
 
 # ---- 红线（NEVER add — DMG 增量超标） --------------------------------------
 # gradio              # +45MB; demo-only, NC 走原生 UI 不需要
 # pandas              # +25MB; KC 业务用 jieba/tiktoken 已足够
-# numpy               # +18MB; pandas 传递依赖才会拖入
 # huggingface_hub     # +15MB; KC 不本地跑 HF 模型
 # torch / transformers # +500MB+; 远端 LLM 不需要
 # jupyter             # demo 才需要

@@ -271,6 +271,106 @@ PYEOF
 # 清理 stage（成功路径）
 cleanup_stage
 
+# ---- KC-MOD-5 patch: run_api.py 支持 --host / --port argv ------------------
+# 2026-05-28 真机打包发现 KC run_api.py 原版用 settings.HOST/PORT 忽略 argv，
+# NC 的 task_008 KcProcessManager 传 `--host --port` 不生效 → 健康检查 timeout。
+# 本 patch 让 run_api.py 解析 argv + 优先 argv > settings。待 KC 仓库正式实装
+# KC-MOD-5 后此 patch 自动失效（python -c 检测已含 argparse 则跳过）。
+RUN_API_PATH="${KC_TARGET}/src/run_api.py"
+if [[ -f "${RUN_API_PATH}" ]]; then
+  if ! grep -q "argparse" "${RUN_API_PATH}"; then
+    log "applying KC-MOD-5 patch: run_api.py argv support"
+    "${PYTHON_BIN}" - <<'PYEOF'
+import os, sys
+path = os.environ["RUN_API_PATH"]
+new_content = '''#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+FastAPI 入口脚本 - 启动 Knowledge Compiler API 服务
+
+NC patch (KC-MOD-5, 2026-05-28 真机打包加入):
+  NC 通过 `run_api.py --host 127.0.0.1 --port <dyn>` 传端口；原版用
+  settings.HOST/PORT 忽略 argv → NC health check timeout。
+  本 patch 添加 argparse 让 --host / --port 覆盖 settings 值。
+  KC 仓库正式实装 KC-MOD-5 后此 patch 应回流并移除。
+"""
+import argparse
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from compiler.interfaces.main import app
+from compiler.infrastructure.config import get_settings
+import uvicorn
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Knowledge Compiler API")
+    parser.add_argument("--host", default=None, help="Override settings.HOST")
+    parser.add_argument("--port", type=int, default=None, help="Override settings.PORT")
+    args, _unknown = parser.parse_known_args()
+    return args
+
+
+def main():
+    settings = get_settings()
+    args = parse_args()
+    host = args.host if args.host else settings.HOST
+    port = args.port if args.port else settings.PORT
+
+    print("=" * 60)
+    print("Knowledge Compiler API")
+    print(f"   Version: {settings.API_VERSION}")
+    print(f"   Host: {host}:{port}")
+    print(f"   AI Features: {'Enabled' if settings.ENABLE_AI_FEATURES else 'Disabled'}")
+    print("=" * 60)
+
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        reload=settings.DEBUG,
+        log_level=settings.LOG_LEVEL.lower(),
+    )
+
+
+if __name__ == "__main__":
+    main()
+'''
+with open(path, "w", encoding="utf-8") as fh:
+    fh.write(new_content)
+print(f"[prepare-kc-runtime] KC-MOD-5 patch applied: {path}")
+PYEOF
+    export -n RUN_API_PATH
+  else
+    log "KC-MOD-5 already present (skipping patch)"
+  fi
+fi
+export RUN_API_PATH
+
+# ---- macOS ad-hoc codesign（防 Apple Silicon hardened runtime 杀 .so/.dylib）-
+# 2026-05-28 真机打包发现 macOS 14+ 对未签名 dylib 在 hardened runtime 下
+# 直接 SIGKILL（例：faiss-cpu / scipy 的 native .so）。修复：用 ad-hoc 签名
+# （-s -）给 venv 内所有 .so / .dylib 加签。仅 macOS 跑；Linux 跳过。
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  if command -v codesign >/dev/null 2>&1; then
+    log "applying macOS ad-hoc codesign to all .so/.dylib"
+    SIGN_COUNT=0
+    SIGN_FAIL=0
+    while IFS= read -r -d '' sf; do
+      if codesign --force -s - --options runtime --timestamp=none "${sf}" >/dev/null 2>&1; then
+        SIGN_COUNT=$((SIGN_COUNT + 1))
+      else
+        SIGN_FAIL=$((SIGN_FAIL + 1))
+      fi
+    done < <(find "${KC_TARGET}/venv" -type f \( -name "*.so" -o -name "*.dylib" \) -print0 2>/dev/null)
+    log "  ad-hoc signed: ${SIGN_COUNT}    failed: ${SIGN_FAIL}"
+  else
+    log "WARN: codesign not found; native .so/.dylib may be SIGKILL'd by hardened runtime"
+  fi
+fi
+
 # ---- 体积报告 (AC-6) -------------------------------------------------------
 log "kc resource size (before optimize):"
 du -sh "${KC_TARGET}"
