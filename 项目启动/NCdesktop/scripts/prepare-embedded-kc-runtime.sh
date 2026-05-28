@@ -277,7 +277,7 @@ cleanup_stage
 # 本 patch 让 run_api.py 解析 argv + 优先 argv > settings。待 KC 仓库正式实装
 # KC-MOD-5 后此 patch 自动失效（python -c 检测已含 argparse 则跳过）。
 # dry-run 模式跳过（mock fixture 没真的 src/run_api.py）。
-RUN_API_PATH="${KC_TARGET}/src/run_api.py"
+export RUN_API_PATH="${KC_TARGET}/src/run_api.py"
 if [[ "${DRY_RUN}" != "1" ]] && [[ -f "${RUN_API_PATH}" ]]; then
   if ! grep -q "argparse" "${RUN_API_PATH}"; then
     log "applying KC-MOD-5 patch: run_api.py argv support"
@@ -343,12 +343,89 @@ with open(path, "w", encoding="utf-8") as fh:
     fh.write(new_content)
 print(f"[prepare-kc-runtime] KC-MOD-5 patch applied: {path}")
 PYEOF
-    export -n RUN_API_PATH
   else
     log "KC-MOD-5 already present (skipping patch)"
   fi
 fi
-export RUN_API_PATH
+export -n RUN_API_PATH
+
+# ---- KC-MOD-1 patch: ingest 响应加 enhanced_markdown 字段 -------------------
+# 2026-05-28 真机打包发现 KC `/api/v1/ingest` 原版只返回 enhanced_path（磁盘
+# 路径），不返回 enhanced_markdown（字符串）；NC client.rs (task_007) 期望
+# inline string → 走 KcCallError::Malformed 路径 → enrich fallback markitdown
+# 原版 MD（无 KC chunk 标签）。
+#
+# 本 patch 改 KC 一侧 2 文件：
+# 1) compiler/interfaces/models.py: IngestResponse 加 enhanced_markdown 字段
+# 2) compiler/interfaces/routes.py: ingest endpoint 读 enhanced_path 文件回填
+#
+# 待 KC 仓库正式实装 KC-MOD-1 后此 patch 应回流并移除。幂等：检测已含字段则跳过。
+export KC_MODELS_PATH="${KC_TARGET}/src/compiler/interfaces/models.py"
+export KC_ROUTES_PATH="${KC_TARGET}/src/compiler/interfaces/routes.py"
+if [[ "${DRY_RUN}" != "1" ]] && [[ -f "${KC_MODELS_PATH}" ]] && [[ -f "${KC_ROUTES_PATH}" ]]; then
+  if ! grep -q "enhanced_markdown" "${KC_MODELS_PATH}"; then
+    log "applying KC-MOD-1 patch: models.py + routes.py enhanced_markdown field"
+    "${PYTHON_BIN}" - <<'PYEOF'
+import os
+mp = os.environ["KC_MODELS_PATH"]
+rp = os.environ["KC_ROUTES_PATH"]
+
+# models.py: 在 enhanced_path 行后插入 enhanced_markdown 字段
+with open(mp, "r", encoding="utf-8") as fh:
+    m_content = fh.read()
+old_line = '    enhanced_path: str = Field(..., description="增强 Markdown 路径")'
+new_block = (
+    '    enhanced_path: str = Field(..., description="增强 Markdown 路径")\n'
+    '    enhanced_markdown: Optional[str] = Field(None, description="增强 Markdown 字符串（NC patch: KC-MOD-1，2026-05-28 真机加）")'
+)
+m_content = m_content.replace(old_line, new_block, 1)
+with open(mp, "w", encoding="utf-8") as fh:
+    fh.write(m_content)
+
+# routes.py: 在 IngestResponse(success=True,...) 之前读 enhanced_path 文件
+with open(rp, "r", encoding="utf-8") as fh:
+    r_content = fh.read()
+old_return = (
+    '        return IngestResponse(\n'
+    '            success=True,\n'
+    '            doc_id=result.get("doc_id", ""),\n'
+    '            title=result.get("title", ""),\n'
+    '            enhanced_path=result.get("enhanced_path", ""),\n'
+    '            index_path=result.get("index_path", ""),'
+)
+new_return = (
+    '        # NC patch (KC-MOD-1, 2026-05-28 真机加)：读 enhanced_path 文件\n'
+    '        # 内容回填 enhanced_markdown 字段，让 NC client 直接消费 inline string\n'
+    '        enhanced_path = result.get("enhanced_path", "")\n'
+    '        enhanced_markdown = None\n'
+    '        if enhanced_path:\n'
+    '            try:\n'
+    '                from pathlib import Path\n'
+    '                p = Path(enhanced_path)\n'
+    '                if p.is_file():\n'
+    '                    enhanced_markdown = p.read_text(encoding="utf-8")\n'
+    '            except Exception as _e:\n'
+    '                enhanced_markdown = None\n'
+    '\n'
+    '        return IngestResponse(\n'
+    '            success=True,\n'
+    '            doc_id=result.get("doc_id", ""),\n'
+    '            title=result.get("title", ""),\n'
+    '            enhanced_path=enhanced_path,\n'
+    '            enhanced_markdown=enhanced_markdown,\n'
+    '            index_path=result.get("index_path", ""),'
+)
+r_content = r_content.replace(old_return, new_return, 1)
+with open(rp, "w", encoding="utf-8") as fh:
+    fh.write(r_content)
+
+print(f"[prepare-kc-runtime] KC-MOD-1 patch applied: {mp}, {rp}")
+PYEOF
+  else
+    log "KC-MOD-1 already present (skipping patch)"
+  fi
+fi
+export -n KC_MODELS_PATH KC_ROUTES_PATH
 
 # ---- macOS ad-hoc codesign（防 Apple Silicon hardened runtime 杀 .so/.dylib）-
 # 2026-05-28 真机打包发现 macOS 14+ 对未签名 dylib 在 hardened runtime 下
