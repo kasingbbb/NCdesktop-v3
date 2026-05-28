@@ -275,7 +275,13 @@ impl PipelineScheduler {
                 // - Ok(false) → 走常规 markitdown 路径
                 // - Err(e)    → 按 ParseError 处理（不"猜测"成 scan）：log warn 后 fall-through，
                 //               让 markitdown 自尝试；其失败仍走 task_008 失效四元分类。
-                if primary_name == "markitdown" && asset.mime_type == "application/pdf" {
+                // hotfix 2026-05-26：scan_pdf_route_decision 在某些 PDF 上让 lopdf hang
+                // 整个 tokio runtime（独立 binary 测试无 hang，但 main worktree
+                // release build 必现）。临时禁用短路 —— 所有 PDF 直接走 markitdown，
+                // 由 markitdown 90s 超时 + EOutputEmpty 兜底扫描件。
+                // task_009 多页采样修复已提交（scan_pdf_detect.rs），但应用集成
+                // 仍受 lopdf 死循环阻塞，需要更深的 lopdf 调用栈诊断。
+                if false && primary_name == "markitdown" && asset.mime_type == "application/pdf" {
                     match scan_pdf_route_decision(Path::new(&asset.file_path)) {
                         ScanPdfDecision::ShortCircuit => {
                             let code = FailureCode::EScanPdfUnsupported;
