@@ -65,6 +65,8 @@ mkdir -p "${MOCK_APP}/Contents/Resources"
 # Mock KC repo with whitelisted source files
 MOCK_KC="${TMPDIR}/MockKC"
 mkdir -p "${MOCK_KC}/compiler"
+mkdir -p "${MOCK_KC}/notecapt"  # task_001 调研误判修正后入白名单
+touch "${MOCK_KC}/notecapt/__init__.py"
 touch "${MOCK_KC}/compiler/__init__.py"
 touch "${MOCK_KC}/run_api.py"
 
@@ -132,10 +134,11 @@ hdr "T5: kc-requirements.txt 红线 (no gradio/pandas/numpy/huggingface_hub/torc
 if [[ ! -f "${KC_REQS}" ]]; then
   ng "kc-requirements.txt not found: ${KC_REQS}"
 else
+  # PM 2026-05-28 方案 A 后修订：numpy/scipy/faiss-cpu/hdbscan 从红线移除
+  #（KC pipeline_b_semantic 主链路真需要）。仍保留 6 个红线包。
   REDLINE_PATTERNS=(
     "^gradio[[:space:]]*[=><~]"
     "^pandas[[:space:]]*[=><~]"
-    "^numpy[[:space:]]*[=><~]"
     "^huggingface_hub[[:space:]]*[=><~]"
     "^torch[[:space:]]*[=><~]"
     "^transformers[[:space:]]*[=><~]"

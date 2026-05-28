@@ -276,8 +276,9 @@ cleanup_stage
 # NC 的 task_008 KcProcessManager 传 `--host --port` 不生效 → 健康检查 timeout。
 # 本 patch 让 run_api.py 解析 argv + 优先 argv > settings。待 KC 仓库正式实装
 # KC-MOD-5 后此 patch 自动失效（python -c 检测已含 argparse 则跳过）。
+# dry-run 模式跳过（mock fixture 没真的 src/run_api.py）。
 RUN_API_PATH="${KC_TARGET}/src/run_api.py"
-if [[ -f "${RUN_API_PATH}" ]]; then
+if [[ "${DRY_RUN}" != "1" ]] && [[ -f "${RUN_API_PATH}" ]]; then
   if ! grep -q "argparse" "${RUN_API_PATH}"; then
     log "applying KC-MOD-5 patch: run_api.py argv support"
     "${PYTHON_BIN}" - <<'PYEOF'
@@ -352,8 +353,9 @@ export RUN_API_PATH
 # ---- macOS ad-hoc codesign（防 Apple Silicon hardened runtime 杀 .so/.dylib）-
 # 2026-05-28 真机打包发现 macOS 14+ 对未签名 dylib 在 hardened runtime 下
 # 直接 SIGKILL（例：faiss-cpu / scipy 的 native .so）。修复：用 ad-hoc 签名
-# （-s -）给 venv 内所有 .so / .dylib 加签。仅 macOS 跑；Linux 跳过。
-if [[ "$(uname -s)" == "Darwin" ]]; then
+# （-s -）给 venv 内所有 .so / .dylib 加签。仅 macOS 跑；Linux 跳过；
+# dry-run 跳过（mock fixture 没真 venv）。
+if [[ "${DRY_RUN}" != "1" ]] && [[ "$(uname -s)" == "Darwin" ]]; then
   if command -v codesign >/dev/null 2>&1; then
     log "applying macOS ad-hoc codesign to all .so/.dylib"
     SIGN_COUNT=0
