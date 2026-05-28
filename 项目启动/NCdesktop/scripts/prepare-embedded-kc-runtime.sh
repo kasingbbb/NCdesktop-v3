@@ -427,6 +427,52 @@ PYEOF
 fi
 export -n KC_MODELS_PATH KC_ROUTES_PATH
 
+# ---- KC-MOD-7 patch: /health endpoint ai_enabled 真检查 Key ----------------
+# 2026-05-29 真机修：原 /health 返回 ai_enabled=settings.ENABLE_AI_FEATURES
+# （默认 True），完全不检查实际 LLM Key 是否配置 → NC "测试连通性"按钮永远
+# 显示成功，即使 KC pipeline 跑时报"未配置任何 LLM API key"。
+# 本 patch 让 ai_enabled = ENABLE_AI_FEATURES AND (has ZHIPUAI_API_KEY OR
+# has OPENAI_API_KEY)，与 pipeline 实际行为对齐。
+# 幂等：检测已含 ai_truly_enabled 则跳过。
+export KC_HEALTH_ROUTES_PATH="${KC_TARGET}/src/compiler/interfaces/routes.py"
+if [[ "${DRY_RUN}" != "1" ]] && [[ -f "${KC_HEALTH_ROUTES_PATH}" ]]; then
+  if ! grep -q "ai_truly_enabled" "${KC_HEALTH_ROUTES_PATH}"; then
+    log "applying KC-MOD-7 patch: /health ai_enabled real key check"
+    "${PYTHON_BIN}" - <<'PYEOF'
+import os
+rp = os.environ["KC_HEALTH_ROUTES_PATH"]
+with open(rp, "r", encoding="utf-8") as fh:
+    c = fh.read()
+old = (
+    '    return HealthResponse(\n'
+    '        status="healthy",\n'
+    '        version=settings.API_VERSION,\n'
+    '        timestamp=datetime.now(),\n'
+    '        ai_enabled=settings.ENABLE_AI_FEATURES,'
+)
+new = (
+    '    # NC patch (KC-MOD-7, 2026-05-29): ai_enabled 真检查 Key（与 pipeline\n'
+    '    # 实际行为对齐，避免 NC "测试连通性"永远成功的误导）\n'
+    '    has_zhipu = bool(settings.ZHIPUAI_API_KEY)\n'
+    '    has_openai = bool(settings.OPENAI_API_KEY)\n'
+    '    ai_truly_enabled = settings.ENABLE_AI_FEATURES and (has_zhipu or has_openai)\n'
+    '    return HealthResponse(\n'
+    '        status="healthy",\n'
+    '        version=settings.API_VERSION,\n'
+    '        timestamp=datetime.now(),\n'
+    '        ai_enabled=ai_truly_enabled,'
+)
+c = c.replace(old, new, 1)
+with open(rp, "w", encoding="utf-8") as fh:
+    fh.write(c)
+print(f"[prepare-kc-runtime] KC-MOD-7 patch applied: {rp}")
+PYEOF
+  else
+    log "KC-MOD-7 already present (skipping patch)"
+  fi
+fi
+export -n KC_HEALTH_ROUTES_PATH
+
 # ---- macOS ad-hoc codesign（防 Apple Silicon hardened runtime 杀 .so/.dylib）-
 # 2026-05-28 真机打包发现 macOS 14+ 对未签名 dylib 在 hardened runtime 下
 # 直接 SIGKILL（例：faiss-cpu / scipy 的 native .so）。修复：用 ad-hoc 签名
