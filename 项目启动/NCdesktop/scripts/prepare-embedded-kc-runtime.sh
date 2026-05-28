@@ -37,10 +37,16 @@ readonly RUNTIME_ID="ncdesktop-kc-runtime"
 readonly KC_RESOURCE_SUBPATH="Contents/Resources/kc"
 readonly MANIFEST_SUBPATH="Contents/Resources/runtime-manifest.json"
 
-# 复制 KC 源码白名单 — 仅 compiler/ 包 + run_api.py。
-# 红线: notecapt / gradio_demo / examples / tests / docs 不入包。
+# 复制 KC 源码白名单 — compiler/ + notecapt/ + run_api.py。
+# 红线: gradio_demo / examples / tests / docs 不入包（demo / 测试 / 文档）。
+#
+# 历史更正：task_001 Architect 调研误把 notecapt/（KC 仓库内的同名 1.2MB 包，
+# 含 api/core/pipelines/，被 compiler/interfaces/main.py 强依赖）当作 NC-specific
+# demo 排除，导致 KC 启动 ModuleNotFoundError: No module named 'notecapt'。
+# 2026-05-28 真机打包发现并纠偏，notecapt 入白名单。
 readonly KC_SRC_INCLUDE=(
   "compiler"
+  "notecapt"
   "run_api.py"
 )
 
