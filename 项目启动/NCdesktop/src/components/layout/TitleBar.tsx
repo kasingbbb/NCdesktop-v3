@@ -10,12 +10,12 @@ export function TitleBar({ onSettingsOpen, onSearchOpen }: TitleBarProps) {
   const activeProject = useProjectStore((s) => s.getActiveProject());
 
   return (
-    <header className="titlebar-drag-region glass-titlebar flex items-center h-[48px] px-[var(--space-4)] relative">
+    <header className="titlebar-drag-region glass-titlebar flex items-center h-[56px] px-[var(--space-4)] relative">
       {/* macOS 红绿灯留白：系统按钮由 Tauri Overlay titleBarStyle 渲染，这里只保留宽度占位 */}
       <div className="w-[80px] shrink-0" aria-hidden />
 
-      {/* 面包屑 */}
-      <div className="flex-1 flex items-center justify-center gap-[6px] text-[12px] tracking-[0.02em]" data-no-drag>
+      {/* 面包屑（容器本身保留可拖拽；按钮/链接/输入已由 .titlebar-drag-region CSS 自动 no-drag） */}
+      <div className="flex-1 flex items-center justify-center gap-[6px] text-[12px] tracking-[0.02em]">
         {activeProject ? (
           <>
             <span style={{ color: "rgba(255,255,255,0.4)" }}>项目列表</span>
@@ -38,8 +38,8 @@ export function TitleBar({ onSettingsOpen, onSearchOpen }: TitleBarProps) {
         )}
       </div>
 
-      {/* 右侧工具区 */}
-      <div className="w-[80px] shrink-0 flex items-center justify-end gap-[4px] pr-[12px]" data-no-drag>
+      {/* 右侧工具区（按钮自身已 no-drag，容器留可拖以扩大拖拽面积） */}
+      <div className="w-[80px] shrink-0 flex items-center justify-end gap-[4px] pr-[12px]">
         {onSettingsOpen && (
           <button
             type="button"

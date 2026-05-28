@@ -2,6 +2,7 @@ import { Search, Plus, LayoutGrid, List, ChevronLeft, Loader2, PanelRight, Light
 import { useProjectStore } from "../../stores/projectStore";
 import { useLibraryStore } from "../../stores/libraryStore";
 import { useUIStore } from "../../stores/uiStore";
+import { useExtractionStore } from "../../stores/extractionStore";
 
 interface ToolbarProps {
   onSearchOpen?: () => void;
@@ -17,7 +18,12 @@ export function Toolbar({ onSearchOpen }: ToolbarProps) {
     getActiveProject,
   } = useProjectStore();
   const { activeLibraryId, ensureActiveLibrary } = useLibraryStore();
-  const { inspectorOpen, toggleInspector, setRightPanelMode } = useUIStore();
+  const { inspectorOpen, toggleInspector, setRightPanelMode, activeSidebarSection } =
+    useUIStore();
+  const pipelineProgress = useExtractionStore((s) => s.pipelineProgress);
+  const extractingCount =
+    (pipelineProgress?.queued ?? 0) + (pipelineProgress?.running ?? 0);
+  const listTitle = activeSidebarSection === "recent" ? "最近项目" : "项目列表";
 
   const activeProject = activeProjectId ? getActiveProject() : undefined;
 
@@ -48,18 +54,20 @@ export function Toolbar({ onSearchOpen }: ToolbarProps) {
           </h2>
         </div>
         <div className="flex items-center gap-[6px] shrink-0">
-          {/* 提取状态徽章 */}
-          <div
-            className="flex items-center gap-[4px] text-[11px] px-[8px] py-[3px] rounded-[var(--radius-md)]"
-            style={{
-              color: "var(--text-secondary)",
-              background: "var(--surface-secondary)",
-              border: "1px solid var(--border-primary)",
-            }}
-          >
-            <Loader2 size={12} className="animate-spin" />
-            提取中 2 个
-          </div>
+          {/* 提取状态徽章：仅在真正有任务在排队/执行时显示 */}
+          {extractingCount > 0 && (
+            <div
+              className="flex items-center gap-[4px] text-[11px] px-[8px] py-[3px] rounded-[var(--radius-md)]"
+              style={{
+                color: "var(--text-secondary)",
+                background: "var(--surface-secondary)",
+                border: "1px solid var(--border-primary)",
+              }}
+            >
+              <Loader2 size={12} className="animate-spin" />
+              提取中 {extractingCount} 个
+            </div>
+          )}
           {/* 知识关联按钮 */}
           <button
             type="button"
@@ -110,7 +118,7 @@ export function Toolbar({ onSearchOpen }: ToolbarProps) {
     >
       <div className="flex items-center gap-[10px] flex-1 min-w-0">
         <h2 className="text-[15px] font-semibold whitespace-nowrap" style={{ color: "var(--text-primary)" }}>
-          项目列表
+          {listTitle}
         </h2>
         {/* 搜索栏 — 点击打开 ⌘K Command Palette */}
         <div

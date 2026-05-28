@@ -1,8 +1,15 @@
-import { useEffect, useCallback, useState } from "react";
-import { FileText, Copy, RefreshCw, ChevronDown, ChevronRight } from "lucide-react";
+import { useEffect, useCallback, useMemo, useState } from "react";
+import { FileText, Copy, RefreshCw, Sparkles, ChevronDown, ChevronRight } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { Asset } from "../../types";
 import { useExtractionStore } from "../../stores/extractionStore";
+import * as cmd from "../../lib/tauri-commands";
 import { ExtractionBadge } from "../features/extraction/ExtractionBadge";
+import { FrontmatterSummaryView } from "../features/extraction/FrontmatterSummaryView";
+import { FrontmatterTagsView } from "../features/extraction/FrontmatterTagsView";
+import { parseFrontmatter } from "../../utils/parseFrontmatter";
+import { mapKcEnrichedToLabel } from "../../utils/kcEnrichedLabel";
 import type { ExtractionStatus } from "../../types/extraction";
 
 interface InspectorExtractionProps {
@@ -79,6 +86,18 @@ export function InspectorExtraction({ asset }: InspectorExtractionProps) {
   // 最新一行转换元数据（后端按 converted_at DESC 返回）
   const latestMeta = conversionMetaCache[asset.id]?.[0];
 
+  // task_018 AC-1：每次 asset 切换都重新 parseFrontmatter。
+  // 用 useMemo 把解析结果缓存在 structuredMd 字面值上 —— 同一 asset 多次 re-render 不会重复解析。
+  const parsed = useMemo(() => {
+    const md = content?.structuredMd;
+    if (typeof md !== "string" || md.length === 0) {
+      return { frontmatter: null, body: "", parseError: undefined as string | undefined };
+    }
+    return parseFrontmatter(md);
+  }, [content?.structuredMd]);
+  // 仅当 frontmatter 解析成功且 parseError 不存在时启用 markdown 视图；否则回退到 <pre>
+  const useFrontmatterView = parsed.frontmatter !== null && !parsed.parseError;
+
   const handleCopy = useCallback(async () => {
     const text = content?.rawText ?? content?.structuredMd;
     if (!text) return;
@@ -94,6 +113,34 @@ export function InspectorExtraction({ asset }: InspectorExtractionProps) {
   const handleRetry = useCallback(() => {
     void retryExtraction(asset.id);
   }, [asset.id, retryExtraction]);
+
+  // task_026 AC-3：Inspector "重新增强"按钮 —— 调 retriggerExtraction(asset.id, true)
+  // 强制清 kc_enriched 让 task_012 enrichment 重跑。
+  // 显隐条件由 `showReEnrichButton` 计算（见下）。
+  const [reEnriching, setReEnriching] = useState(false);
+  const handleReEnrich = useCallback(async () => {
+    if (reEnriching) return;
+    setReEnriching(true);
+    try {
+      await cmd.retriggerExtraction(asset.id, true);
+      // 拉一次最新状态（kc_enriched 已被清，UI 应隐藏按钮直到重 enrich 完成回填）
+      void fetchExtractedContent(asset.id);
+    } catch (err) {
+      console.error("重新增强失败:", err);
+    } finally {
+      setReEnriching(false);
+    }
+  }, [asset.id, reEnriching, fetchExtractedContent]);
+
+  // AC-3 显隐：
+  // - asset_type='md' 不显示（不能误触发对 markdown 原件的 KC）
+  // - extracted_content.kcEnriched 必须非 null 且非 "false"
+  //   （null = 未做过 KC，"false" = enrich 失败 —— 都不允许"重新增强"
+  //   只允许"true"/"partial" 强制重跑）。
+  const showReEnrichButton =
+    asset.assetType !== "md" &&
+    !!content?.kcEnriched &&
+    content.kcEnriched !== "false";
 
   return (
     <div className="mb-[var(--space-4)]">
@@ -180,25 +227,73 @@ export function InspectorExtraction({ asset }: InspectorExtractionProps) {
                 >
                   Markdown 预览
                 </span>
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-1 text-[var(--text-xs)] px-1.5 py-0.5 rounded-[var(--radius-sm)] transition-colors hover:bg-[var(--surface-tertiary)]"
-                  style={{ color: "var(--text-secondary)" }}
-                  onClick={handleCopy}
-                >
-                  <Copy size={11} />
-                  {copied ? "已复制" : "复制"}
-                </button>
+                <div className="inline-flex items-center gap-1">
+                  {showReEnrichButton && (
+                    <button
+                      type="button"
+                      data-testid="re-enrich-button"
+                      aria-label="重新增强"
+                      title="重新增强 / Re-enhance with KC"
+                      className="inline-flex items-center gap-1 text-[var(--text-xs)] px-1.5 py-0.5 rounded-[var(--radius-sm)] transition-colors hover:bg-[var(--surface-tertiary)] disabled:opacity-50"
+                      style={{ color: "var(--text-secondary)" }}
+                      onClick={handleReEnrich}
+                      disabled={reEnriching}
+                    >
+                      <Sparkles size={11} />
+                      {reEnriching ? "重新增强中…" : "重新增强"}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 text-[var(--text-xs)] px-1.5 py-0.5 rounded-[var(--radius-sm)] transition-colors hover:bg-[var(--surface-tertiary)]"
+                    style={{ color: "var(--text-secondary)" }}
+                    onClick={handleCopy}
+                  >
+                    <Copy size={11} />
+                    {copied ? "已复制" : "复制"}
+                  </button>
+                </div>
               </div>
-              <pre
-                className="text-[var(--text-xs)] leading-relaxed whitespace-pre-wrap break-words max-h-[240px] overflow-y-auto rounded-[var(--radius-sm)] p-2"
-                style={{
-                  color: "var(--text-primary)",
-                  background: "var(--surface-primary)",
-                }}
-              >
-                {content.structuredMd}
-              </pre>
+              {useFrontmatterView && parsed.frontmatter ? (
+                <div className="space-y-2" data-testid="frontmatter-view">
+                  <FrontmatterSummaryView
+                    summary={parsed.frontmatter.aiSummary}
+                    isAi={true}
+                  />
+                  <FrontmatterTagsView
+                    aiTags={parsed.frontmatter.aiTags}
+                    ruleTags={parsed.frontmatter.ruleTags}
+                  />
+                  <div
+                    className="markdown-body text-[var(--text-xs)] leading-relaxed break-words max-h-[240px] overflow-y-auto rounded-[var(--radius-sm)] p-2"
+                    style={{
+                      color: "var(--text-primary)",
+                      background: "var(--surface-primary)",
+                    }}
+                    data-testid="markdown-body"
+                  >
+                    {/*
+                      task_018 AC-1：用 react-markdown + remark-gfm 渲染正文。
+                      安全：react-markdown v9 默认禁用 raw HTML（不传 rehype-raw），
+                      用户写的 <script> 等 tag 不会被执行，等价于 allowDangerousHtml: false。
+                    */}
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {parsed.body}
+                    </ReactMarkdown>
+                  </div>
+                </div>
+              ) : (
+                <pre
+                  className="text-[var(--text-xs)] leading-relaxed whitespace-pre-wrap break-words max-h-[240px] overflow-y-auto rounded-[var(--radius-sm)] p-2"
+                  style={{
+                    color: "var(--text-primary)",
+                    background: "var(--surface-primary)",
+                  }}
+                  data-testid="pre-fallback"
+                >
+                  {content.structuredMd}
+                </pre>
+              )}
               {content.qualityLevel > 0 && (
                 <p
                   className="text-[10px]"
@@ -207,6 +302,22 @@ export function InspectorExtraction({ asset }: InspectorExtractionProps) {
                   质量：{qualityLabel(content.qualityLevel)}（{content.qualityLevel}） · 转换来源：{extractorLabel(content.extractorType)}
                 </p>
               )}
+              {(() => {
+                // task_018 AC-2 / task_019 TD-4：kc_enriched 字面映射 → 用户文案。
+                // null → 不渲染该行（历史数据）。translation 由 shared helper 提供，
+                // 保证 InspectorExtraction 与 DocumentViewer 文案一致。
+                const kcMapped = mapKcEnrichedToLabel(content.kcEnriched);
+                if (kcMapped === null) return null;
+                return (
+                  <p
+                    className="text-[10px]"
+                    style={{ color: "var(--text-tertiary)" }}
+                    data-testid="kc-enriched-label"
+                  >
+                    {kcMapped.label}
+                  </p>
+                );
+              })()}
               {latestMeta && (
                 <div className="space-y-1">
                   <p

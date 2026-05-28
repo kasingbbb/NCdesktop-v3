@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   X,
   ChevronLeft,
@@ -11,9 +11,13 @@ import {
   Music,
   File,
 } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useAssetStore } from "../../../stores/assetStore";
 import { getFileContent } from "../../../lib/tauri-commands";
+import { parseFrontmatter } from "../../../utils/parseFrontmatter";
+import { mapKcEnrichedToLabel, type KcEnrichedTone } from "../../../utils/kcEnrichedLabel";
 import type { Asset } from "../../../types";
 
 interface DocumentViewerProps {
@@ -235,6 +239,15 @@ function PdfContent({ asset }: { asset: Asset }) {
   );
 }
 
+/**
+ * task_019_doc_viewer_render — KC v6 增强 MD 渲染
+ *
+ * AC-1：parseFrontmatter → 顶部 frontmatter 卡片 + react-markdown 主体
+ * AC-2：Tailwind 表格 / typography / 锚点 / 代码块 / 64ch 宽
+ * AC-3：ImageContent / PdfContent / AudioContent / FallbackContent 保持不变
+ * AC-5 (TD-4)：kc_enriched 字面映射 helper 由 mapKcEnrichedToLabel 共享
+ * 安全：react-markdown@9 默认不传 rehype-raw，等价于 allowDangerousHtml: false
+ */
 function TextContent({ asset }: { asset: Asset }) {
   const [content, setContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -242,10 +255,20 @@ function TextContent({ asset }: { asset: Asset }) {
   useEffect(() => {
     setLoading(true);
     getFileContent(asset.filePath)
-      .then((text) => setContent(text))
+      .then((text: string) => setContent(text))
       .catch(() => setContent(null))
       .finally(() => setLoading(false));
   }, [asset.filePath]);
+
+  // 解析 frontmatter；YAML 失败/无 frontmatter 时 parsed.frontmatter = null。
+  // useMemo 把结果 memo 在 content 字面值上，避免重渲染重复 parse。
+  const parsed = useMemo(() => {
+    if (content === null || content.length === 0) {
+      return { frontmatter: null, body: "", parseError: undefined as string | undefined };
+    }
+    return parseFrontmatter(content);
+  }, [content]);
+  const useMarkdownView = parsed.frontmatter !== null && !parsed.parseError;
 
   if (loading) {
     return (
@@ -263,17 +286,182 @@ function TextContent({ asset }: { asset: Asset }) {
     );
   }
 
+  // 失败回退：YAML 非法 / 无 frontmatter（历史 MD）→ 原 <pre> 模式。
+  if (!useMarkdownView || !parsed.frontmatter) {
+    return (
+      <div className="w-full h-full overflow-y-auto p-8">
+        <div className="max-w-3xl mx-auto">
+          <pre
+            data-testid="doc-viewer-pre-fallback"
+            className="text-[var(--text-base)] leading-relaxed whitespace-pre-wrap font-mono"
+            style={{ color: "var(--text-primary)" }}
+          >
+            {content}
+          </pre>
+        </div>
+      </div>
+    );
+  }
+
+  const fm = parsed.frontmatter;
+
   return (
     <div className="w-full h-full overflow-y-auto p-8">
-      <div className="max-w-3xl mx-auto">
-        <pre
-          className="text-[var(--text-base)] leading-relaxed whitespace-pre-wrap font-mono"
+      <div className="mx-auto" style={{ maxWidth: "64ch" }}>
+        {/* 顶部 frontmatter 卡片（仅 KC 增强字段） */}
+        <FrontmatterCard
+          aiSummary={fm.aiSummary}
+          aiTags={fm.aiTags}
+          ruleTags={fm.ruleTags}
+          kcEnriched={fm.kcEnriched ?? null}
+        />
+
+        {/* react-markdown 主体（含 remark-gfm 表格 / 锚点 / strikethrough）
+            Tailwind typography 样式 + 表格边框 + 代码块背景。 */}
+        <div
+          data-testid="doc-viewer-markdown-body"
+          className="markdown-body prose prose-sm max-w-none break-words
+                     [&_h1]:text-[var(--text-2xl)] [&_h1]:font-semibold [&_h1]:mt-6 [&_h1]:mb-3
+                     [&_h2]:text-[var(--text-xl)] [&_h2]:font-semibold [&_h2]:mt-5 [&_h2]:mb-2
+                     [&_h3]:text-[var(--text-lg)] [&_h3]:font-semibold [&_h3]:mt-4 [&_h3]:mb-2
+                     [&_h4]:text-[var(--text-base)] [&_h4]:font-semibold [&_h4]:mt-3 [&_h4]:mb-1
+                     [&_p]:leading-relaxed [&_p]:my-3
+                     [&_a]:text-[var(--accent-primary,#0a84ff)] [&_a]:underline
+                     [&_ul]:list-disc [&_ul]:ml-6 [&_ul]:my-2
+                     [&_ol]:list-decimal [&_ol]:ml-6 [&_ol]:my-2
+                     [&_li]:my-1
+                     [&_code]:font-mono [&_code]:text-[0.92em] [&_code]:px-1 [&_code]:py-0.5
+                     [&_code]:rounded [&_code]:bg-[var(--surface-tertiary)]
+                     [&_pre]:bg-[var(--surface-tertiary)] [&_pre]:rounded-[var(--radius-sm)]
+                     [&_pre]:p-3 [&_pre]:my-3 [&_pre]:overflow-x-auto [&_pre]:font-mono [&_pre]:text-[0.92em]
+                     [&_pre>code]:bg-transparent [&_pre>code]:p-0
+                     [&_table]:my-4 [&_table]:w-full [&_table]:border-collapse
+                     [&_table]:border [&_table]:border-[var(--border-primary)]
+                     [&_th]:border [&_th]:border-[var(--border-primary)] [&_th]:px-3 [&_th]:py-2
+                     [&_th]:bg-[var(--surface-secondary)] [&_th]:font-semibold [&_th]:text-left
+                     [&_td]:border [&_td]:border-[var(--border-primary)] [&_td]:px-3 [&_td]:py-2
+                     [&_tbody>tr:nth-child(odd)]:bg-[var(--surface-secondary)]
+                     [&_blockquote]:border-l-4 [&_blockquote]:border-[var(--border-primary)]
+                     [&_blockquote]:pl-4 [&_blockquote]:my-3 [&_blockquote]:text-[var(--text-secondary)]
+                     [&_hr]:my-6 [&_hr]:border-[var(--border-primary)]"
           style={{ color: "var(--text-primary)" }}
         >
-          {content}
-        </pre>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            {parsed.body}
+          </ReactMarkdown>
+        </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * task_019 AC-1 / AC-5：frontmatter 卡片
+ * - 摘要（ai_summary）
+ * - 标签（ai_tags + rule_tags 合并展示）
+ * - kc_enriched 状态行（含 dot；null 整行隐藏）
+ *
+ * 视觉规范：与 NC 现有 typography 一致，固定背景 surface-secondary。
+ */
+function FrontmatterCard(props: {
+  aiSummary: string | undefined;
+  aiTags: string[] | undefined;
+  ruleTags: string[] | undefined;
+  kcEnriched: string | null;
+}) {
+  const { aiSummary, aiTags, ruleTags, kcEnriched } = props;
+  const kc = mapKcEnrichedToLabel(kcEnriched);
+  const allTags = [...(aiTags ?? []), ...(ruleTags ?? [])];
+
+  // 卡片完全空（无任何 KC 字段）→ 不渲染，避免空白板块
+  const hasAnything = !!aiSummary || allTags.length > 0 || kc !== null;
+  if (!hasAnything) return null;
+
+  return (
+    <div
+      data-testid="doc-viewer-frontmatter-card"
+      className="mb-6 rounded-[var(--radius-md)] border p-4 space-y-3"
+      style={{
+        background: "var(--surface-secondary)",
+        borderColor: "var(--border-primary)",
+      }}
+    >
+      {aiSummary && (
+        <div>
+          <p
+            className="text-[var(--text-xs)] uppercase tracking-[0.05em] mb-1"
+            style={{ color: "var(--text-tertiary)" }}
+          >
+            AI 摘要
+          </p>
+          <p
+            className="text-[var(--text-sm)] leading-relaxed"
+            style={{ color: "var(--text-primary)" }}
+          >
+            {aiSummary}
+          </p>
+        </div>
+      )}
+
+      {allTags.length > 0 && (
+        <div>
+          <p
+            className="text-[var(--text-xs)] uppercase tracking-[0.05em] mb-1"
+            style={{ color: "var(--text-tertiary)" }}
+          >
+            标签
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {allTags.map((t) => (
+              <span
+                key={t}
+                className="text-[var(--text-xs)] px-2 py-0.5 rounded-[var(--radius-sm)]"
+                style={{
+                  background: "var(--surface-tertiary)",
+                  color: "var(--text-secondary)",
+                }}
+              >
+                {t}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {kc !== null && (
+        <div
+          className="flex items-center gap-2"
+          data-testid="doc-viewer-kc-enriched-row"
+        >
+          <KcEnrichedDot tone={kc.tone} />
+          <span
+            className="text-[var(--text-xs)]"
+            style={{ color: "var(--text-secondary)" }}
+            data-testid="doc-viewer-kc-enriched-label"
+          >
+            {kc.label}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** kc_enriched 状态的小圆点。颜色映射：success→green / partial→amber / inactive→grey */
+function KcEnrichedDot({ tone }: { tone: KcEnrichedTone }) {
+  const color =
+    tone === "success"
+      ? "var(--color-success, #34c759)"
+      : tone === "partial"
+        ? "var(--color-warning, #ff9500)"
+        : "var(--text-tertiary, #8e8e93)";
+  return (
+    <span
+      aria-hidden="true"
+      data-testid={`doc-viewer-kc-dot-${tone}`}
+      className="inline-block w-2 h-2 rounded-full"
+      style={{ background: color }}
+    />
   );
 }
 

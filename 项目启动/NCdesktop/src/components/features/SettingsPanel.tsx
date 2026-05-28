@@ -9,11 +9,13 @@ import {
   Shield,
   ToggleRight,
   FileText,
+  Sparkles,
 } from "lucide-react";
 import { useSettingsStore } from "../../stores";
 import { useUIStore } from "../../stores/uiStore";
 import { useUserPromptStore } from "../../stores/userPromptStore";
 import { LLMSettingsForm } from "./bridge/LLMSettingsForm";
+import { KcSettingsForm } from "./bridge/KcSettingsForm";
 import { PromptCustomizationPanel } from "../settings/PromptCustomizationPanel";
 import type { AppSettings } from "../../types";
 
@@ -33,6 +35,7 @@ type SettingsTab =
   | "dropzone"
   | "audio"
   | "ai"
+  | "kc"
   | "prompt"
   | "privacy";
 
@@ -43,6 +46,7 @@ const TABS: Array<{ id: SettingsTab; label: string; icon: typeof Palette }> = [
   { id: "dropzone", label: "悬浮窗", icon: MonitorSmartphone },
   { id: "audio", label: "音频", icon: Headphones },
   { id: "ai", label: "AI / LLM", icon: Brain },
+  { id: "kc", label: "知识增强 (KC)", icon: Sparkles },
   { id: "prompt", label: "Prompt 自定义", icon: FileText },
   { id: "privacy", label: "隐私", icon: Shield },
 ];
@@ -300,6 +304,8 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
             )}
 
             {activeTab === "ai" && <LLMSettingsForm />}
+
+            {activeTab === "kc" && <KcSettingsForm />}
 
             {activeTab === "prompt" && <PromptCustomizationPanel />}
 

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { ChevronDown, ChevronRight, ExternalLink, FolderOpen } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
-import { SidebarSection } from "../layout/SidebarItem";
 import { useProjectStore } from "../../stores/projectStore";
 import { useUIStore } from "../../stores/uiStore";
 import {
@@ -90,9 +89,12 @@ export function ProjectTree() {
   );
 
   return (
-    <SidebarSection title="Projects">
+    <>
       {projects.length === 0 ? (
-        <div className="px-5 py-2 text-[var(--text-xs)]" style={{ color: "var(--text-tertiary)" }}>
+        <div
+          className="px-[14px] py-[4px] text-[11px]"
+          style={{ color: "var(--sidebar-text-dim)" }}
+        >
           暂无项目
         </div>
       ) : (
@@ -187,6 +189,6 @@ export function ProjectTree() {
           );
         })
       )}
-    </SidebarSection>
+    </>
   );
 }

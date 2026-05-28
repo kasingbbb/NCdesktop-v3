@@ -1,7 +1,8 @@
-import { useRef, useEffect, useCallback, useState, type MouseEvent } from "react";
+import { useRef, useEffect, useCallback, useState, useMemo, type MouseEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useProjectStore } from "../../stores/projectStore";
 import { useLibraryStore } from "../../stores/libraryStore";
+import { useUIStore } from "../../stores/uiStore";
 import { ProjectCard } from "./ProjectCard";
 import { ProjectListItem } from "./ProjectListItem";
 import { EmptyState } from "./EmptyState";
@@ -9,13 +10,24 @@ import { logger } from "../../utils/logger";
 
 export function ProjectListView() {
   const {
-    projects: items,
+    projects,
     viewMode,
     fetchProjects: fetchItems,
     setActiveProject,
     deleteProject,
   } = useProjectStore();
   const { activeLibraryId, ensureActiveLibrary } = useLibraryStore();
+  const activeSidebarSection = useUIStore((s) => s.activeSidebarSection);
+
+  // "最近" → 按 updatedAt 倒序；"项目" 保持 store 默认顺序
+  const items = useMemo(() => {
+    if (activeSidebarSection !== "recent") return projects;
+    return [...projects].sort((a, b) => {
+      const ta = Date.parse(a.updatedAt ?? "") || 0;
+      const tb = Date.parse(b.updatedAt ?? "") || 0;
+      return tb - ta;
+    });
+  }, [projects, activeSidebarSection]);
   const parentRef = useRef<HTMLDivElement>(null);
   /** Tauri WKWebView 下 window.confirm 常不弹出或恒为 false，改用应用内确认 */
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);

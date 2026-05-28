@@ -7,7 +7,6 @@ export type LayoutMode = "three-column" | "two-column" | "single-column";
  */
 export type SidebarSection =
   | "recent"
-  | "starred"
   | "projects"
   | "tags"
   | "knowledge-hub"

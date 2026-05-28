@@ -62,6 +62,119 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
         v17_categories_tables(conn)?;
     }
 
+    if current_version < 18 {
+        v18_kc_columns(conn)?;
+    }
+
+    Ok(())
+}
+
+/// V18（merge_compiler_into_nc_v1 / task_002）：KC enrichment 字段。
+///
+/// 设计依据：Architect output.md § ADR-005 / § 数据模型 / PRD §5.5。
+/// - `extracted_content` 表追加 3 列承载"是否增强 + 版本 + 标签来源"：
+///   - `kc_enriched TEXT`     —— NULL / "true" / "false" / "partial"
+///     （历史行 NULL → 前端按"未增强"展示）
+///   - `kc_version TEXT`      —— KC compiler 版本字符串，如 "0.9"；用于触发"KC 升级后回填"决策
+///   - `kc_tags_source TEXT`  —— "ai+rule" / "rule_only" / NULL；标签是否经过 LLM 增强
+/// - `conversion_meta` 表追加 3 列承载"KC 请求级追踪指标"：
+///   - `kc_doc_id TEXT`            —— KC ingest 时分配的 doc-id（用于复现 bug 与日志追踪）
+///   - `kc_response_size INTEGER`  —— KC 返回增强 MD 的字节数（粗略质量指标）
+///   - `kc_duration_ms INTEGER`    —— KC enrich 调用耗时（毫秒；用于性能监控）
+///
+/// 设计要点：
+/// 1. **TEXT 容忍 NULL，不写 default 值**——历史行新列保持 NULL 即可表达"KC 集成前的产物"，
+///    前端按"未增强"展示，避免给历史数据强行打"未增强=false"的语义负担。
+/// 2. **不重建表，只 ADD COLUMN**——保留所有现有行 + 索引 + FK；ADD COLUMN 是 SQLite 的
+///    廉价操作，不复制数据。
+/// 3. **失败回滚**——v18 内任一 ALTER 失败即 return Err，run_migrations 不会推进 user_version；
+///    下次启动重新进入 v18 分支再试（已成功的 ALTER 会被 column_exists 守卫跳过）。
+///
+/// 幂等：仿 v5 / v12 / v16 / v17 模式——用 `PRAGMA table_info(...)` 守卫，避免在已升级 DB
+/// 上重跑时报 `duplicate column`（风险登记表 R5）。`PRAGMA user_version = 18` 总是最后一句，
+/// 即便所有列都已存在，本函数也只是把版本号往前推。
+///
+/// **双重防御**（仿 V14：迁移内检测表是否存在，缺失则跳过本表的 ALTER 但仍推版本号）：
+/// 历史残缺路径下可能出现 `user_version >= 11` 但 `extracted_content` 仍未建表的情况
+/// （详见 `v11_repairs_user_version_10_missing_conversion_meta` 测试：人为标 user_version=10
+/// 但只建 assets 表，跳过 V8 建 extracted_content）。这种残缺态下 V18 跳过对应表的 ALTER，
+/// 只推版本号，避免阻塞应用启动；该 case 在生产中极罕见，仅作"启动不挂死"兜底。
+fn v18_kc_columns(conn: &Connection) -> Result<(), String> {
+    // 表存在性预检（仿 V14 双重防御）
+    let ec_exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='extracted_content'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n == 1)
+        .unwrap_or(false);
+    let cm_exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='conversion_meta'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n == 1)
+        .unwrap_or(false);
+
+    // extracted_content 新增 3 列
+    if ec_exists {
+        let ec_cols = list_table_columns(conn, "extracted_content")?;
+        if !ec_cols.iter().any(|c| c == "kc_enriched") {
+            conn.execute_batch(
+                "ALTER TABLE extracted_content ADD COLUMN kc_enriched TEXT;",
+            )
+            .map_err(|e| format!("V18 迁移失败（添加 extracted_content.kc_enriched 列）: {e}"))?;
+        }
+        if !ec_cols.iter().any(|c| c == "kc_version") {
+            conn.execute_batch(
+                "ALTER TABLE extracted_content ADD COLUMN kc_version TEXT;",
+            )
+            .map_err(|e| format!("V18 迁移失败（添加 extracted_content.kc_version 列）: {e}"))?;
+        }
+        if !ec_cols.iter().any(|c| c == "kc_tags_source") {
+            conn.execute_batch(
+                "ALTER TABLE extracted_content ADD COLUMN kc_tags_source TEXT;",
+            )
+            .map_err(|e| format!("V18 迁移失败（添加 extracted_content.kc_tags_source 列）: {e}"))?;
+        }
+    } else {
+        log::warn!("V18 跳过 extracted_content 列添加：表未就绪（残缺路径，仿 V14 双重防御）");
+    }
+
+    // conversion_meta 新增 3 列
+    if cm_exists {
+        let cm_cols = list_table_columns(conn, "conversion_meta")?;
+        if !cm_cols.iter().any(|c| c == "kc_doc_id") {
+            conn.execute_batch(
+                "ALTER TABLE conversion_meta ADD COLUMN kc_doc_id TEXT;",
+            )
+            .map_err(|e| format!("V18 迁移失败（添加 conversion_meta.kc_doc_id 列）: {e}"))?;
+        }
+        if !cm_cols.iter().any(|c| c == "kc_response_size") {
+            conn.execute_batch(
+                "ALTER TABLE conversion_meta ADD COLUMN kc_response_size INTEGER;",
+            )
+            .map_err(|e| format!("V18 迁移失败（添加 conversion_meta.kc_response_size 列）: {e}"))?;
+        }
+        if !cm_cols.iter().any(|c| c == "kc_duration_ms") {
+            conn.execute_batch(
+                "ALTER TABLE conversion_meta ADD COLUMN kc_duration_ms INTEGER;",
+            )
+            .map_err(|e| format!("V18 迁移失败（添加 conversion_meta.kc_duration_ms 列）: {e}"))?;
+        }
+    } else {
+        log::warn!("V18 跳过 conversion_meta 列添加：表未就绪（残缺路径，仿 V14 双重防御）");
+    }
+
+    conn.execute_batch("PRAGMA user_version = 18;")
+        .map_err(|e| format!("V18 迁移失败（置版本）: {e}"))?;
+
+    log::info!(
+        "数据库迁移 V18 完成：extracted_content + 3 列（kc_enriched/kc_version/kc_tags_source）, \
+         conversion_meta + 3 列（kc_doc_id/kc_response_size/kc_duration_ms）"
+    );
     Ok(())
 }
 
@@ -1021,7 +1134,7 @@ mod tests {
     }
 
     /// 模拟生产残留：user_version=10 但 conversion_meta 缺失。
-    /// V11 必须真正补建表 + 三索引；后续 V12~V15 把 user_version 推到 15。
+    /// V11 必须真正补建表 + 三索引；后续 V12~V18 把 user_version 推到 18。
     #[test]
     fn v11_repairs_user_version_10_missing_conversion_meta() {
         let conn = Connection::open_in_memory().unwrap();
@@ -1041,14 +1154,15 @@ mod tests {
         assert!(index_exists(&conn, "idx_cm_source"));
         assert!(index_exists(&conn, "idx_cm_derived"));
         assert!(index_exists(&conn, "idx_cm_converted_at"));
-        // V12+V13+V14+V15+V16+V17 紧随 V11 跑完，把 user_version 推到 17。
-        // V17 在 libraries 表缺失时走 backfill 跳过分支（仿 V14 双重防御）。
-        assert_eq!(user_version(&conn), 17);
+        // V12+V13+V14+V15+V16+V17+V18 紧随 V11 跑完，把 user_version 推到 18。
+        // V17 在 libraries 表缺失时走 backfill 跳过分支（仿 V14 双重防御）；
+        // V18 添加 KC enrichment 6 列（extracted_content + conversion_meta 各 3 列）。
+        assert_eq!(user_version(&conn), 18);
     }
 
-    /// 全新库：V1..V8 + V11..V17 全跑完；包含 user_custom_prompt 与索引；版本=17。
+    /// 全新库：V1..V8 + V11..V18 全跑完；包含 user_custom_prompt 与索引；版本=18。
     #[test]
-    fn fresh_db_runs_all_migrations_to_v17() {
+    fn fresh_db_runs_all_migrations_to_v18() {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).expect("fresh migrations succeed");
 
@@ -1101,11 +1215,28 @@ mod tests {
             cols_assets.iter().any(|c| c == "category_slug"),
             "V17 应已添加 assets.category_slug 列"
         );
-        assert_eq!(user_version(&conn), 17);
+        // V18：extracted_content + conversion_meta 各 3 列 KC enrichment 字段
+        let cols_ec = list_table_columns(&conn, "extracted_content").unwrap();
+        for required in &["kc_enriched", "kc_version", "kc_tags_source"] {
+            assert!(
+                cols_ec.iter().any(|c| c == required),
+                "V18 应已添加 extracted_content.{} 列",
+                required
+            );
+        }
+        let cols_cm = list_table_columns(&conn, "conversion_meta").unwrap();
+        for required in &["kc_doc_id", "kc_response_size", "kc_duration_ms"] {
+            assert!(
+                cols_cm.iter().any(|c| c == required),
+                "V18 应已添加 conversion_meta.{} 列",
+                required
+            );
+        }
+        assert_eq!(user_version(&conn), 18);
     }
 
-    /// 幂等：连续两次调用 run_migrations 不报错，版本仍为 16。
-    /// 关键覆盖：V12 / V16 的 ALTER TABLE 路径在第二次跑时被 PRAGMA table_info 守卫跳过，
+    /// 幂等：连续两次调用 run_migrations 不报错，版本仍为 18。
+    /// 关键覆盖：V12 / V16 / V18 的 ALTER TABLE 路径在第二次跑时被 PRAGMA table_info 守卫跳过，
     /// 不会触发 SQLite "duplicate column" 错误；V15 的 CREATE TABLE IF NOT EXISTS
     /// 在二次执行时同样应 no-op 推版本。
     #[test]
@@ -1113,7 +1244,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).expect("first run succeed");
         run_migrations(&conn).expect("second run should be idempotent");
-        assert_eq!(user_version(&conn), 17);
+        assert_eq!(user_version(&conn), 18);
         assert!(table_exists(&conn, "conversion_meta"));
         assert!(table_exists(&conn, "user_custom_prompt"));
         assert!(table_exists(&conn, "categories"));
@@ -1123,6 +1254,24 @@ mod tests {
         let cols_assets = list_table_columns(&conn, "assets").unwrap();
         assert!(cols_assets.iter().any(|c| c == "concept_extracted_at"));
         assert!(cols_assets.iter().any(|c| c == "category_slug"));
+        // V18 列在幂等二跑后仍存在（无重复添加）
+        let cols_ec = list_table_columns(&conn, "extracted_content").unwrap();
+        for required in &["kc_enriched", "kc_version", "kc_tags_source"] {
+            assert_eq!(
+                cols_ec.iter().filter(|c| *c == required).count(),
+                1,
+                "幂等：extracted_content.{} 必须只出现一次",
+                required
+            );
+        }
+        for required in &["kc_doc_id", "kc_response_size", "kc_duration_ms"] {
+            assert_eq!(
+                cols.iter().filter(|c| *c == required).count(),
+                1,
+                "幂等：conversion_meta.{} 必须只出现一次",
+                required
+            );
+        }
     }
 
     /// V17 backfill：迁移前若已存在 library，跑完 migration 后该库应自动获得 4 个 PARA 内置类目。
@@ -1154,10 +1303,10 @@ mod tests {
         // 此时 V17 还没跑：categories 表不存在
         assert!(!table_exists(&conn, "categories"));
 
-        // 跑 V17 dispatcher
+        // 跑 V17 dispatcher（V18 紧随其后，把版本推到 18）
         run_migrations(&conn).expect("run V17");
 
-        assert_eq!(user_version(&conn), 17);
+        assert_eq!(user_version(&conn), 18);
         let cnt: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM categories WHERE library_id='lib_pre_v17' AND is_builtin=1",
@@ -1271,7 +1420,8 @@ mod tests {
             .unwrap();
         assert_eq!(builtin_cnt, 4, "应有 4 个 builtin（老 1 + seed 补 3）");
 
-        assert_eq!(user_version(&conn), 17);
+        // V17 修完残缺后 V18 紧随其后，把版本推到 18
+        assert_eq!(user_version(&conn), 18);
     }
 
     /// V17 幂等：二次跑不会因 UNIQUE(library_id, slug) 冲突报错，也不会重复插入。
@@ -1310,8 +1460,8 @@ mod tests {
         // 二次 run_migrations 触发 V16 dispatcher，PRAGMA table_info 守卫跳过 ADD COLUMN
         run_migrations(&conn)
             .expect("v16 should be idempotent against existing column");
-        // V17 dispatcher 紧随 V16 跑完，把版本推到 17
-        assert_eq!(user_version(&conn), 17);
+        // V17+V18 dispatcher 紧随 V16 跑完，把版本推到 18
+        assert_eq!(user_version(&conn), 18);
         let cols_assets = list_table_columns(&conn, "assets").unwrap();
         assert!(cols_assets.iter().any(|c| c == "concept_extracted_at"));
     }
@@ -1328,8 +1478,8 @@ mod tests {
         conn.execute_batch("PRAGMA user_version = 14;").unwrap();
         // 二次 run_migrations 触发 V15 dispatcher，CREATE TABLE IF NOT EXISTS 不报错。
         run_migrations(&conn).expect("v15 should be idempotent against existing table");
-        // V15 跑完后版本被 V16+V17 dispatcher 继续推进到 17。
-        assert_eq!(user_version(&conn), 17);
+        // V15 跑完后版本被 V16+V17+V18 dispatcher 继续推进到 18。
+        assert_eq!(user_version(&conn), 18);
         assert!(table_exists(&conn, "user_custom_prompt"));
     }
 
@@ -1539,5 +1689,257 @@ mod tests {
             Some("legacy_unverified"),
             "最新行 m2 应被回填"
         );
+    }
+
+    // ============== V18 KC enrichment 6 列迁移测试 ==============
+
+    /// V18-A：fresh DB 跑完所有 migration 后，extracted_content 应有 3 个 KC 列。
+    #[test]
+    fn v18_adds_kc_columns_to_extracted_content() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("fresh migrations to v18");
+        assert_eq!(user_version(&conn), 18);
+
+        let cols = list_table_columns(&conn, "extracted_content").unwrap();
+        for required in &["kc_enriched", "kc_version", "kc_tags_source"] {
+            assert!(
+                cols.iter().any(|c| c == required),
+                "V18 应已添加 extracted_content.{} 列",
+                required
+            );
+        }
+    }
+
+    /// V18-B：fresh DB 跑完所有 migration 后，conversion_meta 应有 3 个 KC 列。
+    #[test]
+    fn v18_adds_kc_columns_to_conversion_meta() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("fresh migrations to v18");
+        assert_eq!(user_version(&conn), 18);
+
+        let cols = list_table_columns(&conn, "conversion_meta").unwrap();
+        for required in &["kc_doc_id", "kc_response_size", "kc_duration_ms"] {
+            assert!(
+                cols.iter().any(|c| c == required),
+                "V18 应已添加 conversion_meta.{} 列",
+                required
+            );
+        }
+    }
+
+    /// V18-C：幂等。在已升到 18 的 DB 上直接重新调用 v18 函数不报错；列不重复。
+    /// 与 run_migrations_is_idempotent 互补：本测试直击 v18_kc_columns 自身函数，
+    /// 不依赖 dispatcher 的版本守卫；模拟"用户手动跑过一次 v18 后 DB 被外部脚本
+    /// 把 user_version 倒退到 17 又再跑"的残缺路径（R5 风险）。
+    #[test]
+    fn v18_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("first run");
+
+        // 模拟"v18 已落地，但 user_version 被外部脚本倒退到 17"
+        conn.execute_batch("PRAGMA user_version = 17;").unwrap();
+
+        // 通过 dispatcher 二次进入 v18 分支
+        run_migrations(&conn).expect("v18 should be idempotent (via dispatcher)");
+        assert_eq!(user_version(&conn), 18);
+
+        // 直接调用 v18 函数（绕过版本守卫）也必须幂等
+        super::v18_kc_columns(&conn).expect("v18 direct call idempotent");
+        assert_eq!(user_version(&conn), 18);
+
+        // 列不重复：每个新列在 PRAGMA table_info 中只出现一次
+        let cols_ec = list_table_columns(&conn, "extracted_content").unwrap();
+        for required in &["kc_enriched", "kc_version", "kc_tags_source"] {
+            assert_eq!(
+                cols_ec.iter().filter(|c| *c == required).count(),
+                1,
+                "幂等：extracted_content.{} 必须只出现一次",
+                required
+            );
+        }
+        let cols_cm = list_table_columns(&conn, "conversion_meta").unwrap();
+        for required in &["kc_doc_id", "kc_response_size", "kc_duration_ms"] {
+            assert_eq!(
+                cols_cm.iter().filter(|c| *c == required).count(),
+                1,
+                "幂等：conversion_meta.{} 必须只出现一次",
+                required
+            );
+        }
+    }
+
+    /// V18-D：从 v17 起点升级到 v18，历史行新列值为 NULL（不强制写默认值）。
+    /// 锚定 AC-3："迁移前已有的 extracted_content 与 conversion_meta 行所有新列值为 NULL"。
+    #[test]
+    fn v18_preserves_pre_v17_data_with_null_new_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+
+        // 1. 先跑到 v17（停在 v18 前）
+        v1_initial(&conn).unwrap();
+        v2_asset_original_name(&conn).unwrap();
+        v4_knowledge_understanding(&conn).unwrap();
+        v5_asset_derivative_columns(&conn).unwrap();
+        v6_conversion_meta(&conn).unwrap();
+        v7_pipeline_tasks(&conn).unwrap();
+        v8_extracted_content(&conn).unwrap();
+        v11_conversion_meta_repair(&conn).unwrap();
+        v12_conversion_meta_failure_code(&conn).unwrap();
+        v13_concepts_base_tables(&conn).unwrap();
+        v14_legacy_unverified_backfill(&conn).unwrap();
+        v15_user_custom_prompt(&conn).unwrap();
+        v16_assets_concept_extracted_at(&conn).unwrap();
+        v17_categories_tables(&conn).unwrap();
+        assert_eq!(user_version(&conn), 17);
+
+        // 2. 在 v17 schema 上插入"历史数据"（无 KC 列）
+        conn.execute_batch(
+            "INSERT INTO libraries (id, name, root_path) VALUES ('lib_v17', 'L', '/tmp/L');
+             INSERT INTO projects (id, library_id, name) VALUES ('p_v17', 'lib_v17', 'P');
+             INSERT INTO assets (id, project_id, asset_type, name, file_path)
+                 VALUES ('a_v17', 'p_v17', 'document', 'a.pdf', '/tmp/a.pdf');
+             INSERT INTO extracted_content
+                (id, asset_id, status, error_message, retry_count, raw_text, structured_md,
+                 quality_level, extractor_type, segments_json, created_at, updated_at)
+                VALUES ('ec_v17', 'a_v17', 'extracted', NULL, 0, '原文', '# md',
+                        0, 'markitdown', NULL, '2026-05-01T00:00:00Z', '2026-05-01T00:00:00Z');
+             INSERT INTO conversion_meta
+                (id, source_asset_id, derived_asset_id, converter_name, converter_version,
+                 source_mime, source_hash, quality_level, fallback_used,
+                 error_class, conversion_ms, converted_at)
+                VALUES ('cm_v17', 'a_v17', NULL, 'markitdown', '0.0.1', 'application/pdf', 'h',
+                        0, 0, NULL, 100, '2026-05-01T00:00:00Z');",
+        )
+        .unwrap();
+
+        // 3. 跑 v18 → 历史数据完整保留，新列读出来是 NULL
+        run_migrations(&conn).expect("run V18");
+        assert_eq!(user_version(&conn), 18);
+
+        // 3.1 extracted_content 历史行旧字段未变
+        let (raw, md, extractor): (String, String, Option<String>) = conn
+            .query_row(
+                "SELECT raw_text, structured_md, extractor_type
+                 FROM extracted_content WHERE id='ec_v17'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(raw, "原文");
+        assert_eq!(md, "# md");
+        assert_eq!(extractor.as_deref(), Some("markitdown"));
+
+        // 3.2 extracted_content 新列默认 NULL（AC-3）
+        let (kc_enriched, kc_version, kc_tags_source): (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT kc_enriched, kc_version, kc_tags_source
+                 FROM extracted_content WHERE id='ec_v17'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert!(kc_enriched.is_none(), "v18 新列 kc_enriched 应为 NULL");
+        assert!(kc_version.is_none(), "v18 新列 kc_version 应为 NULL");
+        assert!(kc_tags_source.is_none(), "v18 新列 kc_tags_source 应为 NULL");
+
+        // 3.3 conversion_meta 历史行旧字段未变
+        let (converter, conv_ms): (String, Option<i64>) = conn
+            .query_row(
+                "SELECT converter_name, conversion_ms FROM conversion_meta WHERE id='cm_v17'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(converter, "markitdown");
+        assert_eq!(conv_ms, Some(100));
+
+        // 3.4 conversion_meta 新列默认 NULL（AC-3）
+        let (kc_doc_id, kc_resp_size, kc_duration): (
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+        ) = conn
+            .query_row(
+                "SELECT kc_doc_id, kc_response_size, kc_duration_ms
+                 FROM conversion_meta WHERE id='cm_v17'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert!(kc_doc_id.is_none(), "v18 新列 kc_doc_id 应为 NULL");
+        assert!(kc_resp_size.is_none(), "v18 新列 kc_response_size 应为 NULL");
+        assert!(kc_duration.is_none(), "v18 新列 kc_duration_ms 应为 NULL");
+    }
+
+    /// V18-E：新列容忍写入，类型正确。
+    /// 验证 INSERT 时显式给新列写值不报错（INTEGER 列接 i64，TEXT 列接 str）。
+    #[test]
+    fn v18_new_columns_accept_writes() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("fresh migrations to v18");
+        conn.execute_batch(
+            "INSERT INTO libraries (id, name, root_path) VALUES ('lib1', 'L', '/tmp/L');
+             INSERT INTO projects (id, library_id, name) VALUES ('p1', 'lib1', 'P');
+             INSERT INTO assets (id, project_id, asset_type, name, file_path)
+                 VALUES ('a1', 'p1', 'document', 'a.pdf', '/tmp/a.pdf');",
+        )
+        .unwrap();
+
+        // extracted_content 显式给 6 列里的 3 列写值
+        conn.execute(
+            "INSERT INTO extracted_content
+                (id, asset_id, status, error_message, retry_count, raw_text, structured_md,
+                 quality_level, extractor_type, segments_json, created_at, updated_at,
+                 kc_enriched, kc_version, kc_tags_source)
+             VALUES ('ec1', 'a1', 'extracted', NULL, 0, '原文', '# md',
+                     0, 'markitdown+kc', NULL,
+                     '2026-05-27T00:00:00Z', '2026-05-27T00:00:00Z',
+                     'true', '0.9', 'ai+rule')",
+            [],
+        )
+        .unwrap();
+
+        // conversion_meta 显式给 3 列 KC 字段写值
+        conn.execute(
+            "INSERT INTO conversion_meta
+                (id, source_asset_id, derived_asset_id, converter_name, converter_version,
+                 source_mime, source_hash, quality_level, fallback_used,
+                 error_class, conversion_ms, converted_at,
+                 kc_doc_id, kc_response_size, kc_duration_ms)
+             VALUES ('cm1', 'a1', NULL, 'markitdown+kc', '0.9', 'application/pdf', 'h',
+                     0, 0, NULL, 1200, '2026-05-27T00:00:00Z',
+                     'doc-abc12345', 4096, 850)",
+            [],
+        )
+        .unwrap();
+
+        // 读回核验
+        let (kc_enriched, kc_version, kc_tags_source): (String, String, String) = conn
+            .query_row(
+                "SELECT kc_enriched, kc_version, kc_tags_source
+                 FROM extracted_content WHERE id='ec1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(kc_enriched, "true");
+        assert_eq!(kc_version, "0.9");
+        assert_eq!(kc_tags_source, "ai+rule");
+
+        let (kc_doc_id, kc_resp_size, kc_duration): (String, i64, i64) = conn
+            .query_row(
+                "SELECT kc_doc_id, kc_response_size, kc_duration_ms
+                 FROM conversion_meta WHERE id='cm1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(kc_doc_id, "doc-abc12345");
+        assert_eq!(kc_resp_size, 4096);
+        assert_eq!(kc_duration, 850);
     }
 }

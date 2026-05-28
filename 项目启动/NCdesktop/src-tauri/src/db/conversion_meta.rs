@@ -15,7 +15,17 @@ use crate::extraction::failure_code::FailureCode;
 
 /// 转换元数据行（与 `extraction::conversion::ConversionAttempt` 字段一一对应，
 /// 外加 `id` / `source_asset_id` / `derived_asset_id`）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// **task_015（merge_compiler_into_nc_v1）**：新增 3 个 KC enrichment 可选字段，
+/// 用 `#[derive(Default)]` 保证旧调用方只需在字面量末尾加 `..Default::default()`
+/// 即可向后兼容（无需逐个写 `kc_doc_id: None` 等 None 字面）。
+///
+/// 字段约束：
+/// - `kc_response_size` / `kc_duration_ms` 内部用 `Option<i64>` 而非 `Option<u64>`：
+///   SQLite INTEGER 列底层是 i64（受 i64::MAX 上限约束）；语义上 KC 响应体字节数
+///   与耗时永远 ≥ 0，但用 i64 直接对齐 rusqlite trait + 避免 u64 → i64 边界检查。
+///   对外接口（`db_conversion_meta_kc_insert`）接受 `Option<u64>` 并在内部 saturating-cast 到 i64。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversionMetaRow {
     pub id: String,
@@ -30,16 +40,28 @@ pub struct ConversionMetaRow {
     pub error_class: Option<String>,
     pub conversion_ms: Option<i64>,
     pub converted_at: String,
+    // ===== task_015：KC enrichment 追踪指标（v18 schema 新增 3 列） =====
+    /// KC ingest 时分配的 doc-id（用于复现 bug 与日志追踪）。
+    pub kc_doc_id: Option<String>,
+    /// KC 返回增强 MD 的字节数（粗略质量指标）。u64 入参由调用方 saturating-cast 到 i64。
+    pub kc_response_size: Option<i64>,
+    /// KC enrich 调用耗时（毫秒，用于性能监控）。u64 入参由调用方 saturating-cast 到 i64。
+    pub kc_duration_ms: Option<i64>,
 }
 
 /// 插入一条 conversion_meta 记录。`id` 由调用方生成。
+///
+/// **task_015**：SQL 已扩展到 15 列（原 12 列 + KC 3 列）。
+/// 旧调用方若用结构体字面量初始化，需补 `..Default::default()` 才能编译通过；
+/// KC 字段默认 `None`，落库 SQLite NULL。
 pub fn insert(conn: &Connection, row: &ConversionMetaRow) -> Result<(), String> {
     conn.execute(
         "INSERT INTO conversion_meta (
             id, source_asset_id, derived_asset_id, converter_name, converter_version,
             source_mime, source_hash, quality_level, fallback_used,
-            error_class, conversion_ms, converted_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            error_class, conversion_ms, converted_at,
+            kc_doc_id, kc_response_size, kc_duration_ms
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         params![
             row.id,
             row.source_asset_id,
@@ -53,10 +75,65 @@ pub fn insert(conn: &Connection, row: &ConversionMetaRow) -> Result<(), String> 
             row.error_class,
             row.conversion_ms,
             row.converted_at,
+            row.kc_doc_id,
+            row.kc_response_size,
+            row.kc_duration_ms,
         ],
     )
     .map_err(|e| format!("插入 conversion_meta 失败: {e}"))?;
     Ok(())
+}
+
+/// task_015 AC-2：友好封装——给定 KC 三字段，自动构造 `ConversionMetaRow` 后调用 [`insert`]。
+///
+/// 接受 `Option<u64>` 入参（语义上"字节数 / 耗时永远 ≥ 0"），内部用 `saturating-cast`
+/// 到 `i64`（防 KC 偶发返回 > i64::MAX 时整型溢出 panic；实际场景几乎不会触达）。
+///
+/// 设计：
+/// - 调用方典型场景：enrichment 完成一次 KC 请求后，需 append 一行追踪日志。
+///   `derived_asset_id` 默认 `None`（KC enrichment 通常不产出新 asset），
+///   `converter_name` 由调用方指定（如 `"kc_enrichment"`），其它指标字段以
+///   合理默认值填充（`fallback_used=false` / `error_class=None`）。
+/// - 时间戳由本函数生成（RFC3339 UTC），与 task_015 时序无关，调用方无需关心。
+///
+/// **不替代 [`insert`]**：对于 NC 主转换链路（scheduler.rs）依然走 `insert(&row)`，
+/// 此函数仅供 KC enrichment 等只关心"3 个 KC 指标"的轻量调用点使用。
+pub fn db_conversion_meta_kc_insert(
+    conn: &Connection,
+    source_asset_id: &str,
+    converter_name: &str,
+    converter_version: &str,
+    source_mime: &str,
+    source_hash: &str,
+    quality_level: i32,
+    kc_doc_id: Option<&str>,
+    kc_response_size: Option<u64>,
+    kc_duration_ms: Option<u64>,
+) -> Result<String, String> {
+    // u64 → i64 saturating-cast：防 u64::MAX 溢出 panic
+    let kc_response_size_i64 = kc_response_size.map(|n| n.min(i64::MAX as u64) as i64);
+    let kc_duration_ms_i64 = kc_duration_ms.map(|n| n.min(i64::MAX as u64) as i64);
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let row = ConversionMetaRow {
+        id: id.clone(),
+        source_asset_id: source_asset_id.to_string(),
+        derived_asset_id: None,
+        converter_name: converter_name.to_string(),
+        converter_version: converter_version.to_string(),
+        source_mime: source_mime.to_string(),
+        source_hash: source_hash.to_string(),
+        quality_level,
+        fallback_used: false,
+        error_class: None,
+        conversion_ms: None,
+        converted_at: chrono::Utc::now().to_rfc3339(),
+        kc_doc_id: kc_doc_id.map(|s| s.to_string()),
+        kc_response_size: kc_response_size_i64,
+        kc_duration_ms: kc_duration_ms_i64,
+    };
+    insert(conn, &row)?;
+    Ok(id)
 }
 
 /// 列出某 source_asset_id 的所有转换记录，按 `converted_at` 倒序。
@@ -180,10 +257,16 @@ pub enum ConversionState {
 
 /// 将 `conversion_meta.failure_code` 字符串字面映射为 [`FailureCode`] 枚举。
 ///
-/// `legacy_unverified` **不**在 8 枚举中（PRD R-④"老用户感知不退步"），
+/// `legacy_unverified` **不**在 13 枚举中（PRD R-④"老用户感知不退步"），
 /// 因此本函数对它返回 `None`，由调用方按 `LegacyUnverified` 单独分支处理。
 /// 未知字符串（理论上不应出现）同样返回 `None`，由调用方决定容错策略。
-fn parse_failure_code(code: &str) -> Option<FailureCode> {
+///
+/// **task_015b（关 TD-3）**：此函数是 8 markitdown + 5 KC 共 13 个失败码字面的
+/// **canonical / 单源** parser；scheduler.rs::kc_persist_resolved_with_conn 复用本函数
+/// 而非自己维护 mini-parser。字面与 [`FailureCode::as_str`] 严格 round-trip，
+/// 由 [`parse_failure_code_recognises_all_five_kc_variants`] +
+/// [`parse_failure_code_round_trips_all_thirteen_variants`] 双重守护。
+pub(crate) fn parse_failure_code(code: &str) -> Option<FailureCode> {
     match code {
         "E_RUNTIME_MISSING" => Some(FailureCode::ERuntimeMissing),
         "E_EXTRA_MISSING_EPUB" => Some(FailureCode::EExtraMissingEpub),
@@ -193,6 +276,13 @@ fn parse_failure_code(code: &str) -> Option<FailureCode> {
         "E_OUTPUT_GIBBERISH" => Some(FailureCode::EOutputGibberish),
         "E_OUTPUT_NO_STRUCTURE" => Some(FailureCode::EOutputNoStructure),
         "E_TIMEOUT_90S" => Some(FailureCode::ETimeout90s),
+        // task_015b：补全 5 KC 字面（task_003 task_011 ADR-004 映射）。
+        // 字面与 FailureCode::EKc*.as_str() 严格 round-trip，守护测试见 mod tests。
+        "E_KC_UNAVAILABLE" => Some(FailureCode::EKcUnavailable),
+        "E_KC_ENRICH_FAILED" => Some(FailureCode::EKcEnrichFailed),
+        "E_KC_LLM_UNAVAILABLE" => Some(FailureCode::EKcLlmUnavailable),
+        "E_KC_TIMEOUT" => Some(FailureCode::EKcTimeout),
+        "E_KC_INPUT_TOO_LARGE" => Some(FailureCode::EKcInputTooLarge),
         _ => None,
     }
 }
@@ -292,6 +382,12 @@ fn row_to_meta(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConversionMetaRow> {
         error_class: row.get(9)?,
         conversion_ms: row.get(10)?,
         converted_at: row.get(11)?,
+        // task_015：KC 列在 SELECT 中可能未被请求（list_by_source/latest_for_source
+        // 当前 SELECT 列表不含 KC 列，沿用旧 SELECT 不破坏序列化序号）；本 helper
+        // 留 None 兜底——未来若 SELECT 列表加 KC 列，再补 row.get(12..14)。
+        kc_doc_id: None,
+        kc_response_size: None,
+        kc_duration_ms: None,
     })
 }
 
@@ -341,6 +437,7 @@ mod tests {
             error_class: None,
             conversion_ms: Some(500),
             converted_at: when.to_string(),
+            ..Default::default() // task_015：KC 字段默认 None
         }
     }
 
@@ -577,6 +674,7 @@ mod tests {
             error_class: Some("timeout".into()),
             conversion_ms: None,
             converted_at: "2026-05-12T10:00:00Z".into(),
+            ..Default::default() // task_015：KC 字段默认 None
         };
         let json = serde_json::to_string(&row).expect("ser");
         assert!(json.contains("\"derivedAssetId\":null"));
@@ -590,5 +688,138 @@ mod tests {
         assert!(back.conversion_ms.is_none());
         assert_eq!(back.fallback_used, true);
         assert_eq!(back.error_class.as_deref(), Some("timeout"));
+    }
+
+    // ===== task_015 AC-2 / AC-4：db_conversion_meta_kc_insert 测试 =====
+
+    /// task_015 AC-4：`db_conversion_meta_kc_insert` 应在 conversion_meta 表
+    /// 落库一行，且 kc_doc_id / kc_response_size / kc_duration_ms 三列值正确。
+    #[test]
+    fn db_conversion_meta_kc_insert_persists_three_optional() {
+        let conn = setup_db_with_asset("src1");
+        let id = db_conversion_meta_kc_insert(
+            &conn,
+            "src1",
+            "kc_enrichment",
+            "0.9",
+            "application/pdf",
+            "abc123",
+            2,
+            Some("doc-kc-001"),
+            Some(40960),
+            Some(1234),
+        )
+        .expect("kc insert ok");
+        assert!(!id.is_empty(), "应返回非空 UUID");
+
+        // 读 3 个 KC 列验证
+        let (kc_doc_id, kc_response_size, kc_duration_ms): (
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+        ) = conn
+            .query_row(
+                "SELECT kc_doc_id, kc_response_size, kc_duration_ms
+                 FROM conversion_meta WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read row");
+        assert_eq!(kc_doc_id.as_deref(), Some("doc-kc-001"));
+        assert_eq!(kc_response_size, Some(40960));
+        assert_eq!(kc_duration_ms, Some(1234));
+
+        // converter_name / source_asset_id 也应正确
+        let (cn, source): (String, String) = conn
+            .query_row(
+                "SELECT converter_name, source_asset_id FROM conversion_meta WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read meta");
+        assert_eq!(cn, "kc_enrichment");
+        assert_eq!(source, "src1");
+    }
+
+    // ===== task_015b AC-5：parse_failure_code 5 KC 守护 + 13 字面 round-trip =====
+
+    /// task_015b：canonical `parse_failure_code` 必须识别全部 5 个 KC 字面
+    /// （task_003 ADR-004 映射），与 [`FailureCode::EKc*::as_str()`] 严格 round-trip。
+    /// 历史上此函数仅含 8 markitdown 字面，task_012 在 scheduler.rs 中维护过
+    /// workaround 副本（TD-3）—— task_015b 已删除并把守护迁回 canonical 一侧。
+    #[test]
+    fn parse_failure_code_recognises_all_five_kc_variants() {
+        // 直接调 FailureCode::*.as_str() 取字面（避免硬编码字符串再次"双源"）
+        for code in [
+            FailureCode::EKcUnavailable,
+            FailureCode::EKcEnrichFailed,
+            FailureCode::EKcLlmUnavailable,
+            FailureCode::EKcTimeout,
+            FailureCode::EKcInputTooLarge,
+        ] {
+            let s = code.as_str();
+            let parsed = parse_failure_code(s);
+            assert_eq!(
+                parsed,
+                Some(code),
+                "round-trip failed for {s}: as_str() → parse_failure_code() 必须还原同一枚举"
+            );
+        }
+        // 未知字面：保留 None 语义（调用方按 LegacyUnverified 兜底）
+        assert!(parse_failure_code("E_BOGUS_UNKNOWN").is_none());
+        assert!(parse_failure_code("legacy_unverified").is_none());
+    }
+
+    /// task_015b 额外守护：13 个失败码字面（8 markitdown + 5 KC）全部 round-trip。
+    /// 若未来 `FailureCode` 新增变体而忘记同步 parser，此测试会因 as_str() 落入 `None`
+    /// 而 fail —— 作为 canonical parser 的"覆盖完整性"哨兵。
+    #[test]
+    fn parse_failure_code_round_trips_all_thirteen_variants() {
+        for code in [
+            FailureCode::ERuntimeMissing,
+            FailureCode::EExtraMissingEpub,
+            FailureCode::EScanPdfUnsupported,
+            FailureCode::EAudioWrongRoute,
+            FailureCode::EOutputEmpty,
+            FailureCode::EOutputGibberish,
+            FailureCode::EOutputNoStructure,
+            FailureCode::ETimeout90s,
+            FailureCode::EKcUnavailable,
+            FailureCode::EKcEnrichFailed,
+            FailureCode::EKcLlmUnavailable,
+            FailureCode::EKcTimeout,
+            FailureCode::EKcInputTooLarge,
+        ] {
+            assert_eq!(parse_failure_code(code.as_str()), Some(code));
+        }
+    }
+
+    /// task_015：u64 超 i64::MAX 时 saturating-cast 到 i64::MAX，不应 panic。
+    #[test]
+    fn db_conversion_meta_kc_insert_saturates_u64_to_i64_max() {
+        let conn = setup_db_with_asset("src1");
+        let id = db_conversion_meta_kc_insert(
+            &conn,
+            "src1",
+            "kc_enrichment",
+            "0.9",
+            "application/pdf",
+            "h",
+            0,
+            None,
+            Some(u64::MAX),     // 故意超 i64 上限
+            Some(u64::MAX - 5), // 故意接近上限
+        )
+        .expect("u64::MAX should saturate, not panic");
+
+        let (rs, dm): (Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT kc_response_size, kc_duration_ms FROM conversion_meta WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read");
+        assert_eq!(rs, Some(i64::MAX));
+        assert_eq!(dm, Some(i64::MAX));
     }
 }
