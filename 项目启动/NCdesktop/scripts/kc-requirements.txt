@@ -14,11 +14,12 @@
 #     使用解析（含传递依赖）；与 markitdown 走 --no-deps + lock 全列不同 —
 #     KC 依赖链复杂、版本范围更松，由 pip 解析。
 #
-# Python 平台: Python 3.11 (langchain ≥3.10; 与 PBS 3.12 不同步是因为
-#   KC 的 onnxruntime / tiktoken wheel 在 3.11 上 ABI 最稳，PRD §6 ADR-006)。
+# Python 平台: Python 3.12（KC pyproject.toml: requires-python = ">=3.12"；
+#   onnxruntime 1.26 + tiktoken 0.13 在 3.12 已有官方 wheel，2026 实测 PyPI 全齐）。
+#   历史保留：task_027 立项时 ADR-006 给 3.11 是基于过时调研，已纠偏。
 #
 # 重新生成 / 升级方法:
-#   python3.11 -m venv /tmp/kc-lockenv && source /tmp/kc-lockenv/bin/activate
+#   python3.12 -m venv /tmp/kc-lockenv && source /tmp/kc-lockenv/bin/activate
 #   pip install --upgrade pip
 #   pip install -r scripts/kc-requirements.txt
 #   pip list --format freeze   # 验证版本范围合规

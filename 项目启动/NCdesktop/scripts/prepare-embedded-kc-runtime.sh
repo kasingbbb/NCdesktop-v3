@@ -23,7 +23,7 @@
 #
 #   APP_PATH       e.g. src-tauri/target/release/bundle/macos/NoteCapt.app
 #   KC_REPO_PATH   e.g. vendor/KnowledgeCompiler  (含 compiler/ + run_api.py)
-#   PYTHON_BIN     e.g. python3.11  (default; KC langchain 系链需 ≥3.10)
+#   PYTHON_BIN     e.g. python3.12  (default; KC pyproject 要求 >=3.12)
 #
 # 幂等: 同一 APP_PATH + 同 KC commit 重跑会先 rm -rf 旧 kc/，重装等价。
 # 跨平台: macOS / Linux 通用（不依赖 sed -i，避免 BSD vs GNU 分歧）。
@@ -80,7 +80,7 @@ fi
 
 APP_PATH="${POSITIONAL[0]}"
 KC_REPO_PATH="${POSITIONAL[1]}"
-PYTHON_BIN="${POSITIONAL[2]:-python3.11}"
+PYTHON_BIN="${POSITIONAL[2]:-python3.12}"
 
 # ---- 前置检查 --------------------------------------------------------------
 log() { echo "[prepare-kc-runtime] $*"; }
@@ -191,7 +191,7 @@ fi
 VENV_SIZE_BYTES="$(du -sk "${KC_TARGET}/venv" 2>/dev/null | awk '{print $1 * 1024}')"
 [[ -z "${VENV_SIZE_BYTES}" ]] && VENV_SIZE_BYTES=0
 
-# python --version 输出形如 "Python 3.11.9"
+# python --version 输出形如 "Python 3.12.x"
 PYTHON_VERSION="$("${PYTHON_BIN}" --version 2>&1 | head -1)"
 
 # Build timestamp (UTC ISO-8601)

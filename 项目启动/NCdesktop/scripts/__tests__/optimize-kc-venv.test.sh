@@ -35,7 +35,7 @@ hdr()  { echo ""; echo "── $* ──"; }
 # ---- mock venv fixture builder --------------------------------------------
 # 构造一个最小的 mock venv：
 #   bin/python  (空文件)
-#   lib/python3.11/site-packages/
+#   lib/python3.12/site-packages/
 #     somepkg/__init__.py
 #     somepkg/types.pyi               <- step 2 应删
 #     somepkg/tests/test_foo.py       <- step 3 应删
@@ -53,7 +53,7 @@ make_mock_venv() {
   local root="$1"
   mkdir -p "${root}/bin"
   : > "${root}/bin/python"
-  local sp="${root}/lib/python3.11/site-packages"
+  local sp="${root}/lib/python3.12/site-packages"
   mkdir -p "${sp}/somepkg/tests"
   mkdir -p "${sp}/somepkg-1.0.dist-info"
   mkdir -p "${sp}/jieba/tests"
@@ -171,69 +171,69 @@ else
 fi
 
 # 应删: RECORD / *.pyi / dist-info LICENSE/AUTHORS/NOTICE/INSTALLER / tests/
-if [[ ! -f "${MOCK_VENV2}/lib/python3.11/site-packages/somepkg-1.0.dist-info/RECORD" ]]; then
+if [[ ! -f "${MOCK_VENV2}/lib/python3.12/site-packages/somepkg-1.0.dist-info/RECORD" ]]; then
   ok "step 1: RECORD deleted"
 else
   ng "step 1: RECORD survived"
 fi
 
-if [[ ! -f "${MOCK_VENV2}/lib/python3.11/site-packages/somepkg/types.pyi" ]]; then
+if [[ ! -f "${MOCK_VENV2}/lib/python3.12/site-packages/somepkg/types.pyi" ]]; then
   ok "step 2: .pyi deleted"
 else
   ng "step 2: .pyi survived"
 fi
 
-if [[ ! -d "${MOCK_VENV2}/lib/python3.11/site-packages/somepkg/tests" ]]; then
+if [[ ! -d "${MOCK_VENV2}/lib/python3.12/site-packages/somepkg/tests" ]]; then
   ok "step 3: site-packages/somepkg/tests/ deleted"
 else
   ng "step 3: somepkg/tests/ survived"
 fi
 
-if [[ ! -f "${MOCK_VENV2}/lib/python3.11/site-packages/somepkg-1.0.dist-info/LICENSE" ]]; then
+if [[ ! -f "${MOCK_VENV2}/lib/python3.12/site-packages/somepkg-1.0.dist-info/LICENSE" ]]; then
   ok "step 4: dist-info LICENSE deleted"
 else
   ng "step 4: dist-info LICENSE survived"
 fi
 
-if [[ ! -f "${MOCK_VENV2}/lib/python3.11/site-packages/somepkg-1.0.dist-info/AUTHORS" ]]; then
+if [[ ! -f "${MOCK_VENV2}/lib/python3.12/site-packages/somepkg-1.0.dist-info/AUTHORS" ]]; then
   ok "step 4: dist-info AUTHORS deleted"
 else
   ng "step 4: dist-info AUTHORS survived"
 fi
 
-if [[ ! -f "${MOCK_VENV2}/lib/python3.11/site-packages/somepkg-1.0.dist-info/NOTICE" ]]; then
+if [[ ! -f "${MOCK_VENV2}/lib/python3.12/site-packages/somepkg-1.0.dist-info/NOTICE" ]]; then
   ok "step 4: dist-info NOTICE deleted"
 else
   ng "step 4: dist-info NOTICE survived"
 fi
 
-if [[ ! -f "${MOCK_VENV2}/lib/python3.11/site-packages/somepkg-1.0.dist-info/INSTALLER" ]]; then
+if [[ ! -f "${MOCK_VENV2}/lib/python3.12/site-packages/somepkg-1.0.dist-info/INSTALLER" ]]; then
   ok "step 4: dist-info INSTALLER deleted"
 else
   ng "step 4: dist-info INSTALLER survived"
 fi
 
 # 应保留: dist-info METADATA / 顶层包 LICENSE / jieba/dict.txt / jieba/tests/
-if [[ -f "${MOCK_VENV2}/lib/python3.11/site-packages/somepkg-1.0.dist-info/METADATA" ]]; then
+if [[ -f "${MOCK_VENV2}/lib/python3.12/site-packages/somepkg-1.0.dist-info/METADATA" ]]; then
   ok "preserved: dist-info METADATA"
 else
   ng "regression: dist-info METADATA deleted (运行时可能需要)"
 fi
 
-if [[ -f "${MOCK_VENV2}/lib/python3.11/site-packages/somepkg/LICENSE" ]]; then
+if [[ -f "${MOCK_VENV2}/lib/python3.12/site-packages/somepkg/LICENSE" ]]; then
   ok "preserved: top-level pkg LICENSE (not in dist-info)"
 else
   ng "regression: top-level pkg LICENSE deleted"
 fi
 
-if [[ -f "${MOCK_VENV2}/lib/python3.11/site-packages/jieba/dict.txt" ]]; then
+if [[ -f "${MOCK_VENV2}/lib/python3.12/site-packages/jieba/dict.txt" ]]; then
   ok "preserved: jieba/dict.txt (中文分词必需)"
 else
   ng "BLOCKER: jieba/dict.txt deleted (KC 中文分词会崩!)"
 fi
 
 # 红线: jieba/tests 不应被删（脚本 Step 3 用 ! -path "*/jieba/*" 排除）
-if [[ -d "${MOCK_VENV2}/lib/python3.11/site-packages/jieba/tests" ]]; then
+if [[ -d "${MOCK_VENV2}/lib/python3.12/site-packages/jieba/tests" ]]; then
   ok "preserved: jieba/tests/ (red-line: ! -path *jieba* 排除)"
 else
   ng "red-line breach: jieba/tests/ deleted (脚本 Step 3 排除失效)"
