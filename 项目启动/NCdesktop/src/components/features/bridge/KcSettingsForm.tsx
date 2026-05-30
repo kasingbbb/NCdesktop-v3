@@ -56,6 +56,10 @@ const KEY_KC_ENABLE_QA = "kc.enable_qa";
 const KEY_KC_ENABLE_LINKS = "kc.enable_links";
 const KEY_KC_ZHIPU_API_KEY = "kc.zhipu_api_key";
 const KEY_KC_OPENAI_API_KEY = "kc.openai_api_key";
+const KEY_KC_OPENAI_BASE_URL = "kc.openai_base_url";
+const KEY_KC_OPENAI_MODEL = "kc.openai_model";
+const KEY_KC_ZHIPU_BASE_URL = "kc.zhipu_base_url";
+const KEY_KC_ZHIPU_MODEL = "kc.zhipu_model";
 
 /** 健康检查轮询间隔（ms）。仅在页面可见时启用。 */
 const HEALTH_POLL_INTERVAL_MS = 5000;
@@ -145,6 +149,12 @@ export function KcSettingsForm() {
   /** 用户输入的新 Key 草稿（留空 = keep，clear 按钮另算）。 */
   const [zhipuDraft, setZhipuDraft] = useState("");
   const [openaiDraft, setOpenaiDraft] = useState("");
+
+  // base_url / model 覆盖（Unit 3）：非敏感字段，直接受控输入，留空走 KC 默认。
+  const [openaiBaseUrl, setOpenaiBaseUrl] = useState("");
+  const [openaiModel, setOpenaiModel] = useState("");
+  const [zhipuBaseUrl, setZhipuBaseUrl] = useState("");
+  const [zhipuModel, setZhipuModel] = useState("");
   /** 用户点击"清除"后，下次保存时该 Key 走 clear 语义。 */
   const [zhipuClearPending, setZhipuClearPending] = useState(false);
   const [openaiClearPending, setOpenaiClearPending] = useState(false);
@@ -179,6 +189,12 @@ export function KcSettingsForm() {
       setOpenaiConfigured(isKeyConfigured(openai));
       setZhipuMasked(isKeyConfigured(zhipu) ? maskKey(zhipu) : "");
       setOpenaiMasked(isKeyConfigured(openai) ? maskKey(openai) : "");
+
+      // base_url / model（非敏感，直接回填）。
+      setOpenaiBaseUrl(all[KEY_KC_OPENAI_BASE_URL] ?? "");
+      setOpenaiModel(all[KEY_KC_OPENAI_MODEL] ?? "");
+      setZhipuBaseUrl(all[KEY_KC_ZHIPU_BASE_URL] ?? "");
+      setZhipuModel(all[KEY_KC_ZHIPU_MODEL] ?? "");
     } catch {
       // 初值读取失败：保留默认值；不 toast（loading 阶段静默）。
     }
@@ -328,6 +344,10 @@ export function KcSettingsForm() {
         zhipuKeyValue: zhipuAction === "set" ? zhipuTrim : undefined,
         openaiKeyAction: openaiAction,
         openaiKeyValue: openaiAction === "set" ? openaiTrim : undefined,
+        openaiBaseUrl: openaiBaseUrl.trim(),
+        openaiModel: openaiModel.trim(),
+        zhipuBaseUrl: zhipuBaseUrl.trim(),
+        zhipuModel: zhipuModel.trim(),
       });
 
       // 清掉 draft + pending clear；重新加载初值（拿到新的 mask）。
@@ -509,6 +529,61 @@ export function KcSettingsForm() {
           onTest={() => void testConnectivity("openai")}
           testId="openai"
         />
+      </div>
+
+      {/* ── 高级：base_url / model 覆盖（可选，Unit 3）──────── */}
+      <div
+        className="p-[var(--space-3)] rounded-[var(--radius-md)] space-y-[var(--space-2)]"
+        style={{
+          backgroundColor: "rgba(31, 69, 110, 0.06)",
+          border: "1px solid var(--border-primary)",
+        }}
+      >
+        <div
+          className="text-[var(--text-sm)] font-medium"
+          style={{ color: "var(--text-primary)" }}
+        >
+          高级配置（可选）
+        </div>
+        <div
+          className="text-[var(--text-xs)]"
+          style={{ color: "var(--text-tertiary)" }}
+        >
+          留空走 KC 默认。字节方舟等 OpenAI 兼容服务需配 OpenAI Base URL
+          （如 https://ark.cn-beijing.volces.com/api/v3）+ 对应模型名。
+        </div>
+        {(
+          [
+            { label: "OpenAI Base URL", value: openaiBaseUrl, set: setOpenaiBaseUrl, ph: "https://ark.cn-beijing.volces.com/api/v3", tid: "openai-base-url" },
+            { label: "OpenAI Model", value: openaiModel, set: setOpenaiModel, ph: "ep-2024xxxx-xxxxx", tid: "openai-model" },
+            { label: "智谱 Base URL", value: zhipuBaseUrl, set: setZhipuBaseUrl, ph: "https://open.bigmodel.cn/api/paas/v4/", tid: "zhipu-base-url" },
+            { label: "智谱 Model", value: zhipuModel, set: setZhipuModel, ph: "glm-4.7", tid: "zhipu-model" },
+          ] as const
+        ).map((f) => (
+          <label key={f.tid} className="block space-y-[var(--space-1)]">
+            <span
+              className="text-[var(--text-xs)]"
+              style={{ color: "var(--text-secondary)" }}
+            >
+              {f.label}
+            </span>
+            <input
+              type="text"
+              autoComplete="off"
+              spellCheck={false}
+              value={f.value}
+              placeholder={f.ph}
+              onChange={(e) => f.set(e.target.value)}
+              data-testid={`kc-${f.tid}`}
+              className="w-full px-[var(--space-2)] py-[var(--space-1)] rounded-[var(--radius-sm)] text-[var(--text-sm)]"
+              style={{
+                backgroundColor: "var(--bg-primary)",
+                border: "1px solid var(--border-primary)",
+                color: "var(--text-primary)",
+              }}
+            />
+          </label>
+        ))}
       </div>
 
       {/* ── 子开关 ─────────────────────────────── */}

@@ -62,6 +62,13 @@ pub const SETTING_KC_ZHIPU_API_KEY: &str = "kc.zhipu_api_key";
 pub const SETTING_KC_OPENAI_API_KEY: &str = "kc.openai_api_key";
 pub const SETTING_KC_OUTPUTSTAGE_DEFENSE_MODE: &str = "kc.outputstage_defense_mode";
 
+// base_url / model 覆盖（Unit 3，2026-05 真机：字节方舟等 OpenAI 兼容服务需自定义 endpoint）。
+// 全部 Optional，未配置走 KC 子进程内置默认；不属敏感字段（非 Key），可明文 Debug。
+pub const SETTING_KC_OPENAI_BASE_URL: &str = "kc.openai_base_url";
+pub const SETTING_KC_OPENAI_MODEL: &str = "kc.openai_model";
+pub const SETTING_KC_ZHIPU_BASE_URL: &str = "kc.zhipu_base_url";
+pub const SETTING_KC_ZHIPU_MODEL: &str = "kc.zhipu_model";
+
 // =====================================================================
 // 2. OutputStage 防御模式枚举（AC-3，ADR-006）
 // =====================================================================
@@ -149,6 +156,20 @@ pub struct KcSettings {
     /// OpenAI API Key（注入 KC 子进程的 `OPENAI_API_KEY`，作为智谱不可达时的兜底）。
     pub openai_api_key: Option<String>,
 
+    /// OpenAI 兼容 base_url 覆盖（注入 KC `OPENAI_API_BASE`）。`None` → KC 用默认
+    /// `api.openai.com`。字节方舟等 OpenAI 兼容服务必须配此项（如
+    /// `https://ark.cn-beijing.volces.com/api/v3`），否则 AI 增强会路由到 openai.com 失败。
+    pub openai_base_url: Option<String>,
+
+    /// OpenAI 模型名覆盖（注入 KC `OPENAI_MODEL`）。`None` → KC 用默认。
+    pub openai_model: Option<String>,
+
+    /// 智谱 base_url 覆盖（注入 KC `GLM_API_BASE`）。`None` → KC 用默认 `bigmodel.cn`。
+    pub zhipu_base_url: Option<String>,
+
+    /// 智谱模型名覆盖（注入 KC `ZHIPU_MODEL`）。`None` → KC 用默认 `glm-4.7`。
+    pub zhipu_model: Option<String>,
+
     /// OutputStage 越界防御档位（ADR-006）。
     pub outputstage_defense_mode: KcOutputStageDefenseMode,
 }
@@ -166,6 +187,10 @@ impl Default for KcSettings {
             enable_links: true,
             zhipu_api_key: None,
             openai_api_key: None,
+            openai_base_url: None,
+            openai_model: None,
+            zhipu_base_url: None,
+            zhipu_model: None,
             outputstage_defense_mode: KcOutputStageDefenseMode::default(),
         }
     }
@@ -188,6 +213,11 @@ impl std::fmt::Debug for KcSettings {
             .field("enable_links", &self.enable_links)
             .field("zhipu_api_key", &mask_for_debug(self.zhipu_api_key.as_deref()))
             .field("openai_api_key", &mask_for_debug(self.openai_api_key.as_deref()))
+            // base_url / model 非敏感字段，明文 Debug（便于诊断路由问题）。
+            .field("openai_base_url", &self.openai_base_url)
+            .field("openai_model", &self.openai_model)
+            .field("zhipu_base_url", &self.zhipu_base_url)
+            .field("zhipu_model", &self.zhipu_model)
             .field("outputstage_defense_mode", &self.outputstage_defense_mode)
             .finish()
     }
@@ -220,6 +250,10 @@ impl KcSettings {
             enable_links: load_bool(conn, SETTING_KC_ENABLE_LINKS, true)?,
             zhipu_api_key: load_opt_string(conn, SETTING_KC_ZHIPU_API_KEY)?,
             openai_api_key: load_opt_string(conn, SETTING_KC_OPENAI_API_KEY)?,
+            openai_base_url: load_opt_string(conn, SETTING_KC_OPENAI_BASE_URL)?,
+            openai_model: load_opt_string(conn, SETTING_KC_OPENAI_MODEL)?,
+            zhipu_base_url: load_opt_string(conn, SETTING_KC_ZHIPU_BASE_URL)?,
+            zhipu_model: load_opt_string(conn, SETTING_KC_ZHIPU_MODEL)?,
             outputstage_defense_mode: load_defense_mode(conn)?,
         })
     }
@@ -287,6 +321,21 @@ pub fn build_env_vars(settings: &KcSettings) -> Vec<(String, String)> {
     if let Some(k) = settings.openai_api_key.as_deref() {
         if !k.is_empty() {
             out.push(("OPENAI_API_KEY".to_string(), k.to_string()));
+        }
+    }
+
+    // base_url / model 覆盖（Unit 3）：仅 Some + 非空时注入，否则 KC 用内置默认。
+    // 环境变量名与 KC compiler/infrastructure/config.py 的 Settings 字段严格对齐。
+    for (val, env_name) in [
+        (settings.openai_base_url.as_deref(), "OPENAI_API_BASE"),
+        (settings.openai_model.as_deref(), "OPENAI_MODEL"),
+        (settings.zhipu_base_url.as_deref(), "GLM_API_BASE"),
+        (settings.zhipu_model.as_deref(), "ZHIPU_MODEL"),
+    ] {
+        if let Some(v) = val {
+            if !v.is_empty() {
+                out.push((env_name.to_string(), v.to_string()));
+            }
         }
     }
 
@@ -383,6 +432,26 @@ pub fn save_settings(conn: &Connection, settings: &KcSettings) -> Result<(), Str
         conn,
         SETTING_KC_OPENAI_API_KEY,
         settings.openai_api_key.as_deref().unwrap_or(""),
+    )?;
+    db::settings::set(
+        conn,
+        SETTING_KC_OPENAI_BASE_URL,
+        settings.openai_base_url.as_deref().unwrap_or(""),
+    )?;
+    db::settings::set(
+        conn,
+        SETTING_KC_OPENAI_MODEL,
+        settings.openai_model.as_deref().unwrap_or(""),
+    )?;
+    db::settings::set(
+        conn,
+        SETTING_KC_ZHIPU_BASE_URL,
+        settings.zhipu_base_url.as_deref().unwrap_or(""),
+    )?;
+    db::settings::set(
+        conn,
+        SETTING_KC_ZHIPU_MODEL,
+        settings.zhipu_model.as_deref().unwrap_or(""),
     )?;
     db::settings::set(
         conn,
@@ -654,6 +723,44 @@ mod tests {
         );
     }
 
+    // ---------- Unit 3: base_url / model 覆盖注入正确的环境变量 ----------
+    #[test]
+    fn build_env_vars_injects_base_url_and_model_overrides() {
+        let s = KcSettings {
+            openai_api_key: Some(FIXTURE_OPENAI_KEY.to_string()),
+            openai_base_url: Some("https://ark.cn-beijing.volces.com/api/v3".to_string()),
+            openai_model: Some("ep-20240101-abcde".to_string()),
+            zhipu_base_url: Some("https://open.bigmodel.cn/api/paas/v4/".to_string()),
+            zhipu_model: Some("glm-4.7".to_string()),
+            ..Default::default()
+        };
+        let env = build_env_vars(&s);
+        let get = |name: &str| env.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
+        assert_eq!(
+            get("OPENAI_API_BASE"),
+            Some("https://ark.cn-beijing.volces.com/api/v3"),
+            "openai_base_url 应注入 OPENAI_API_BASE，实际: {env:?}"
+        );
+        assert_eq!(get("OPENAI_MODEL"), Some("ep-20240101-abcde"));
+        assert_eq!(get("GLM_API_BASE"), Some("https://open.bigmodel.cn/api/paas/v4/"));
+        assert_eq!(get("ZHIPU_MODEL"), Some("glm-4.7"));
+    }
+
+    // ---------- Unit 3: base_url / model 为 None 时不注入（向后兼容）----------
+    #[test]
+    fn build_env_vars_omits_base_url_model_when_none() {
+        let s = KcSettings {
+            openai_api_key: Some(FIXTURE_OPENAI_KEY.to_string()),
+            ..Default::default()
+        };
+        let env = build_env_vars(&s);
+        let names: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(!names.contains(&"OPENAI_API_BASE"), "None 时不应注入 base_url");
+        assert!(!names.contains(&"OPENAI_MODEL"));
+        assert!(!names.contains(&"GLM_API_BASE"));
+        assert!(!names.contains(&"ZHIPU_MODEL"));
+    }
+
     // ---------- AC-5.2: build_env_vars 对空字符串 Key 不输出 ----------
     //
     // 注意：`KcSettings::load` 已把空串过滤为 None，但用户直接构造
@@ -833,6 +940,10 @@ mod tests {
             enable_links: false,
             zhipu_api_key: Some(FIXTURE_ZHIPU_KEY.to_string()),
             openai_api_key: Some(FIXTURE_OPENAI_KEY.to_string()),
+            openai_base_url: Some("https://ark.cn-beijing.volces.com/api/v3".to_string()),
+            openai_model: Some("ep-fixture-model".to_string()),
+            zhipu_base_url: Some("https://open.bigmodel.cn/api/paas/v4/".to_string()),
+            zhipu_model: Some("glm-4.7".to_string()),
             outputstage_defense_mode: KcOutputStageDefenseMode::TempDirIsolation,
         };
 
