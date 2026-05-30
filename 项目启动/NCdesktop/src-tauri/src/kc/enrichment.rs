@@ -504,7 +504,7 @@ fn read_kc_settings(app: &AppHandle) -> KcSettings {
         Some(s) => s,
         None => return KcSettings::default(),
     };
-    let conn = match db_state.conn.lock() {
+    let conn = match db_state.conn() {
         Ok(c) => c,
         Err(_) => return KcSettings::default(),
     };

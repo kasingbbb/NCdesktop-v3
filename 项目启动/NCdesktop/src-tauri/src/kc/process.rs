@@ -956,8 +956,8 @@ fn read_kc_settings(app: &AppHandle) -> crate::kc::settings::KcSettings {
         Some(s) => s,
         None => return KcSettings::default(),
     };
-    // `Mutex<Connection>` 锁（与 lib.rs setup 一致）；失败兜底走 default。
-    let conn = match db_state.conn.lock() {
+    // 从 r2d2 连接池取连接；失败兜底走 default。
+    let conn = match db_state.conn() {
         Ok(c) => c,
         Err(_) => return KcSettings::default(),
     };

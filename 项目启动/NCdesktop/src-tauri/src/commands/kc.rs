@@ -167,10 +167,7 @@ pub async fn set_kc_settings(
 ) -> Result<(), String> {
     // 步骤 1：读现有 settings（用 sub-scope 持有锁，避免持锁过长）。
     let existing = {
-        let conn = db
-            .conn
-            .lock()
-            .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         KcSettings::load(&conn).unwrap_or_default()
     };
 
@@ -201,10 +198,7 @@ pub async fn set_kc_settings(
 
     // 步骤 4：写回 DB。
     {
-        let conn = db
-            .conn
-            .lock()
-            .map_err(|e| format!("数据库锁获取失败: {e}"))?;
+        let conn = db.conn()?;
         settings::save_settings(&conn, &new_settings)?;
     }
 

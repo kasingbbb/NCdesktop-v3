@@ -1383,10 +1383,10 @@ fn kc_persist_resolved(
         file_sha256(Path::new(&asset.file_path)).unwrap_or_else(|_| String::new());
 
     let db = app.state::<Database>();
-    let conn = match db.conn.lock() {
+    let conn = match db.conn() {
         Ok(c) => c,
         Err(e) => {
-            log::warn!("KC 注入：DB 锁失败: {e}");
+            log::warn!("KC 注入：DB 连接获取失败: {e}");
             return;
         }
     };
