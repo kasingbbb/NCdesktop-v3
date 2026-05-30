@@ -10,7 +10,6 @@
 //! 因此与物理插拔产生同样的边沿。
 
 use crate::sync::usb_import;
-use std::path::Path;
 use tauri::{AppHandle, Emitter};
 
 /// 前端监听的事件名。payload 为 [`usb_import::CardScan`]。
@@ -26,19 +25,18 @@ const STARTUP_DELAY_MS: u64 = 2000;
 /// 启动监听循环（非阻塞，进受管 async runtime）。
 pub fn spawn(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let mount = Path::new("/Volumes").join(usb_import::TARGET_VOLUME_NAME);
-
         tokio::time::sleep(std::time::Duration::from_millis(STARTUP_DELAY_MS)).await;
 
         // 初值 false：若启动时卡已挂载，首轮即视为一次边沿 → 主动扫描一次。
         let mut was_present = false;
 
         loop {
-            let present = mount.is_dir();
+            // 前缀匹配：容忍 macOS 把同名卷挂成 "Notecapt 1" 等（修"重新接入读不到"）。
+            let present = usb_import::find_target_mount().is_some();
 
             if present && !was_present {
                 log::info!(
-                    "[usb_watch] 检测到 {} 挂载，扫描新图片",
+                    "[usb_watch] 检测到 {}* 卷挂载，扫描新图片",
                     usb_import::TARGET_VOLUME_NAME
                 );
                 match usb_import::scan_target_card() {

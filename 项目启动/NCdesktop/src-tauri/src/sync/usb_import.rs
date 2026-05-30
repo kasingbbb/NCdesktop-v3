@@ -21,8 +21,35 @@ use std::collections::HashSet;
 use std::hash::Hasher;
 use std::path::{Path, PathBuf};
 
-/// 目标设备卷名（产品决策：只认 Notecapt 设备，避免误扫其它 U 盘/移动硬盘）。
+/// 目标设备卷名**前缀**（产品决策：只认 Notecapt 设备，避免误扫其它 U 盘/移动硬盘）。
+/// 用前缀而非精确匹配：macOS 在重名/未正常卸载时会把同名卷挂成 `Notecapt 1`、
+/// `Notecapt-1` 等；精确匹配会导致"重新接入读不到新文件"。
 pub const TARGET_VOLUME_NAME: &str = "Notecapt";
+
+/// 卷名是否命中目标设备（前缀匹配）。抽成纯函数便于单测。
+pub fn name_matches_target(volume_name: &str) -> bool {
+    volume_name.starts_with(TARGET_VOLUME_NAME)
+}
+
+/// 在 `/Volumes` 下查找已挂载的目标设备卷（卷名以 [`TARGET_VOLUME_NAME`] 为前缀即命中）。
+///
+/// 返回命中的挂载点；多个命中时取字典序最靠前（确定性）。无命中 → `None`。
+pub fn find_target_mount() -> Option<PathBuf> {
+    let entries = std::fs::read_dir("/Volumes").ok()?;
+    let mut matches: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_dir()
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(name_matches_target)
+                    .unwrap_or(false)
+        })
+        .collect();
+    matches.sort();
+    matches.into_iter().next()
+}
 
 /// 支持的图片扩展名（小写比较）。
 const IMAGE_EXTS: &[&str] = &[
@@ -176,15 +203,17 @@ pub fn mark_imported(state: &mut ImportedMediaState, hashes: &[String]) {
 /// 返回 `None` 表示目标卷未挂载；`Some(scan)` 时 `new_files` 可能为空
 /// （卡在但无新图片）。已自动加载/比对去重状态。
 pub fn scan_target_card() -> Option<CardScan> {
-    let mount = Path::new("/Volumes").join(TARGET_VOLUME_NAME);
-    if !mount.is_dir() {
-        return None;
-    }
+    let mount = find_target_mount()?;
+    let device_name = mount
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(TARGET_VOLUME_NAME)
+        .to_string();
     let state = load_state(&state_path());
     let imported: HashSet<String> = state.imported_hashes.into_iter().collect();
     let new_files = scan_new_images(&mount, &imported);
     Some(CardScan {
-        device_name: TARGET_VOLUME_NAME.to_string(),
+        device_name,
         mount_path: mount.to_string_lossy().to_string(),
         new_files,
     })
@@ -211,6 +240,20 @@ mod tests {
         for n in ["a.pdf", "a.txt", "a.docx", "a.mp3", "a.mp4", "noext", ""] {
             assert!(!is_image(Path::new(n)), "不应识别为图片: {n}");
         }
+    }
+
+    #[test]
+    fn name_matches_target_is_prefix_tolerant() {
+        // 精确名 + macOS 重名挂载后缀都应命中
+        assert!(name_matches_target("Notecapt"));
+        assert!(name_matches_target("Notecapt 1"));
+        assert!(name_matches_target("Notecapt-1"));
+        assert!(name_matches_target("Notecapt 2"));
+        // 其它 U 盘/系统卷不应命中
+        assert!(!name_matches_target("Untitled"));
+        assert!(!name_matches_target("Macintosh HD"));
+        assert!(!name_matches_target("NO NAME"));
+        assert!(!name_matches_target("notecapt")); // 大小写敏感（macOS 卷名保留大小写）
     }
 
     #[test]

@@ -164,8 +164,16 @@ export default function App() {
       })
       .catch((err) => logger.warn("App", "scanUsbCardNow 失败", { err }));
 
+    // 软件重新接入兜底：窗口重新聚焦时主动重扫一次目标卷（覆盖"设备已挂载后新增文件"
+    // 或用户用外部工具重挂载但没产生挂载边沿的场景）。present 幂等，不会重复弹窗。
+    const onFocus = () => {
+      void useUsbImportStore.getState().rescan();
+    };
+    window.addEventListener("focus", onFocus);
+
     return () => {
       cancelled = true;
+      window.removeEventListener("focus", onFocus);
       unlistenImport?.();
       unlistenAI?.();
       unlistenConverted?.();
