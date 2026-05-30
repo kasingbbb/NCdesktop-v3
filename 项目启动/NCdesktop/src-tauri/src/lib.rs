@@ -212,6 +212,11 @@ pub fn run() {
                 });
             }
 
+            // USB 自动导入：启动可移动卷监听循环。轮询 /Volumes/Notecapt 的挂载边沿，
+            // 检测到新图片即 emit `usb-card-detected` 给前端弹确认框（USBReenum 重连=一次边沿）。
+            // 监听任务非阻塞、失败不影响主流程；自带 2s 首轮延迟等前端注册监听。
+            sync::volume_watch::spawn(app.handle().clone());
+
             log::info!("NoteCapt 数据库已初始化: {:?}", db_path);
             Ok(())
         })
@@ -271,6 +276,9 @@ pub fn run() {
             commands::sync::preview_import,
             commands::sync::import_sessions,
             commands::sync::get_sync_status,
+            // USB 裸图片自动导入
+            commands::sync::scan_usb_card_now,
+            commands::sync::mark_card_imported,
             commands::audio::get_audio_metadata,
             commands::audio::get_waveform_data,
             // W2: 悬浮窗

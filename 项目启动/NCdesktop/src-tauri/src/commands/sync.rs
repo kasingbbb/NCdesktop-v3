@@ -1,5 +1,5 @@
 use crate::db::{self, Database};
-use crate::sync::{detector, file_copier, manifest, meta_parser, session_parser, state, timeline_builder, progress};
+use crate::sync::{detector, file_copier, manifest, meta_parser, session_parser, state, timeline_builder, progress, usb_import};
 use serde::Serialize;
 use std::path::Path;
 use tauri::{AppHandle, State};
@@ -342,6 +342,28 @@ pub fn get_sync_status(arca_path: String) -> Result<Vec<state::SyncedSessionReco
         .into_iter()
         .filter(|r| r.device_id == manifest.device_id)
         .collect())
+}
+
+// ── USB 裸图片自动导入（Notecapt 实际固件路径）────────────────────────────
+
+/// 立即扫描目标 U 盘（`/Volumes/Notecapt`）上的新图片。
+///
+/// 返回 `None` 表示目标卷未挂载；`Some(scan)` 时 `newFiles` 可能为空（卡在但无新图）。
+/// 前端在窗口挂载时主动调一次，兜底「app 启动时卡已插入」的场景（不依赖监听事件时序）。
+#[tauri::command]
+pub fn scan_usb_card_now() -> Result<Option<usb_import::CardScan>, String> {
+    Ok(usb_import::scan_target_card())
+}
+
+/// 把一批文件内容 hash 标记为「已导入」，落入去重集合。
+///
+/// 前端在 `import_drop_paths` 成功后调用，使这些图片在后续重连/重启时不再被识别为新文件。
+#[tauri::command]
+pub fn mark_card_imported(hashes: Vec<String>) -> Result<(), String> {
+    let path = usb_import::state_path();
+    let mut st = usb_import::load_state(&path);
+    usb_import::mark_imported(&mut st, &hashes);
+    usb_import::save_state(&path, &st)
 }
 
 /// task_H2_mime_sniff_fix：按扩展名查询 MIME（大小写不敏感）。

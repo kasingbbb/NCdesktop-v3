@@ -12,6 +12,13 @@ import { useLibraryStore } from "./stores/libraryStore";
 import { useProjectStore } from "./stores/projectStore";
 import { useAssetStore } from "./stores/assetStore";
 import { useSettingsStore } from "./stores/settingsStore";
+import { useUsbImportStore } from "./stores/usbImportStore";
+import { UsbImportPrompt } from "./components/features/usb/UsbImportPrompt";
+import {
+  scanUsbCardNow,
+  USB_CARD_DETECTED_EVENT,
+  type UsbCardScan,
+} from "./lib/tauri-commands";
 import { logger } from "./utils/logger";
 
 interface ImportDropFinishedPayload {
@@ -113,6 +120,7 @@ export default function App() {
     let unlistenImport: (() => void) | undefined;
     let unlistenAI: (() => void) | undefined;
     let unlistenConverted: (() => void) | undefined;
+    let unlistenUsb: (() => void) | undefined;
     let cancelled = false;
 
     void listen<ImportDropFinishedPayload>("notecapt/import-drop-finished", (event) => {
@@ -141,11 +149,27 @@ export default function App() {
       if (!cancelled) unlistenConverted = fn;
     });
 
+    // USB 自动导入：监听后端卷监听器的检测事件（插拔/重连触发），
+    // 并在启动时主动扫一次卡（兜底「app 启动时卡已插入」，不依赖事件时序）。
+    void listen<UsbCardScan>(USB_CARD_DETECTED_EVENT, (event) => {
+      useUsbImportStore.getState().present(event.payload);
+    })
+      .then((fn) => {
+        if (!cancelled) unlistenUsb = fn;
+      })
+      .catch((err) => logger.warn("App", "USB 事件监听注册失败", { err }));
+    void scanUsbCardNow()
+      .then((scan) => {
+        if (!cancelled && scan) useUsbImportStore.getState().present(scan);
+      })
+      .catch((err) => logger.warn("App", "scanUsbCardNow 失败", { err }));
+
     return () => {
       cancelled = true;
       unlistenImport?.();
       unlistenAI?.();
       unlistenConverted?.();
+      unlistenUsb?.();
     };
   }, [isDropzone]);
 
@@ -171,6 +195,9 @@ export default function App() {
           <SettingsPanel onClose={() => setSettingsOpen(false)} />
         )}
       </Suspense>
+
+      {/* U盘新图片导入确认弹窗（由 usbImportStore.pending 驱动） */}
+      <UsbImportPrompt />
     </>
   );
 }

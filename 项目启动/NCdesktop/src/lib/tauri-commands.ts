@@ -461,6 +461,39 @@ export async function getSyncStatus(arcaPath: string): Promise<Array<{
   return invoke("get_sync_status", { arcaPath });
 }
 
+// ── USB 裸图片自动导入 ──────────────────────────────
+
+/** 一张待导入的新图片（U盘根目录、内容 hash 去重后的结果）。 */
+export interface NewMediaFile {
+  path: string;
+  name: string;
+  size: number;
+  hash: string;
+}
+
+/** 一次 U盘扫描结果（事件 `usb-card-detected` 的 payload / scanUsbCardNow 的返回）。 */
+export interface UsbCardScan {
+  deviceName: string;
+  mountPath: string;
+  newFiles: NewMediaFile[];
+}
+
+/** 后端发往前端的 U盘检测事件名（与 `volume_watch::CARD_DETECTED_EVENT` 对齐）。 */
+export const USB_CARD_DETECTED_EVENT = "usb-card-detected";
+
+/**
+ * 立即扫描目标 U盘（Notecapt）上的新图片。返回 null 表示卡未挂载。
+ * 前端在窗口挂载时主动调一次，兜底「启动时卡已插入」（不依赖监听事件时序）。
+ */
+export async function scanUsbCardNow(): Promise<UsbCardScan | null> {
+  return invoke<UsbCardScan | null>("scan_usb_card_now");
+}
+
+/** 把一批图片内容 hash 标记为已导入（导入成功后调用，使其后续重连不再视为新文件）。 */
+export async function markCardImported(hashes: string[]): Promise<void> {
+  return invoke<void>("mark_card_imported", { hashes });
+}
+
 // ── Audio ──────────────────────────────────────────
 
 export interface AudioMetadataResult {
