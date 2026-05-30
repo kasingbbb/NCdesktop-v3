@@ -33,6 +33,9 @@ interface UsbImportStore {
   rescan: () => Promise<void>;
 }
 
+/** 上次主动重扫的时间戳（ms），用于聚焦重扫防抖（模块级，跨组件实例共享）。 */
+let lastRescanAt = 0;
+
 export const useUsbImportStore = create<UsbImportStore>((set, get) => ({
   pending: null,
   isImporting: false,
@@ -58,6 +61,11 @@ export const useUsbImportStore = create<UsbImportStore>((set, get) => ({
     // "通过软件重新接入"等不产生挂载边沿的场景）。
     const { pending, isImporting } = get();
     if (pending || isImporting) return;
+    // 防抖：窗口聚焦会频繁触发；扫描含逐文件 hash（I/O 重），8s 内不重复扫，
+    // 避免每次切回 app 都重扫整盘卡顿。
+    const nowTs = Date.now();
+    if (nowTs - lastRescanAt < 8000) return;
+    lastRescanAt = nowTs;
     try {
       const scan = await cmd.scanUsbCardNow();
       if (scan) get().present(scan);

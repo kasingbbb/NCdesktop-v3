@@ -39,7 +39,13 @@ pub fn spawn(app: AppHandle) {
                     "[usb_watch] 检测到 {}* 卷挂载，扫描新图片",
                     usb_import::TARGET_VOLUME_NAME
                 );
-                match usb_import::scan_target_card() {
+                // 扫描含逐文件 hash（I/O 密集），放 blocking 线程池，避免阻塞 async runtime
+                // 与（经事件回调）主线程 —— 否则大文件/慢 U盘会卡死 UI。
+                let scan_result = tauri::async_runtime::spawn_blocking(usb_import::scan_target_card)
+                    .await
+                    .ok()
+                    .flatten();
+                match scan_result {
                     Some(scan) if !scan.new_files.is_empty() => {
                         log::info!(
                             "[usb_watch] {} 发现 {} 个新图片，emit {}",

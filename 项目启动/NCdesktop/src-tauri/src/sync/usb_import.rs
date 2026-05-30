@@ -97,10 +97,23 @@ pub fn is_image(path: &Path) -> bool {
 }
 
 /// 计算文件内容 hash（确定性，无外部依赖）。
+///
+/// **流式分块读**（不再 `std::fs::read` 把整文件一次性读进内存）：大文件（如 100MB+ 视频）
+/// 一次性读入会产生巨额分配 + 长时间持有内核 IO/VM 锁，导致主线程被同一把内核读写锁
+/// 阻塞、整个 app 卡死 1s+（真机 hang 报告即此模式）。分块读每次 syscall 很短，
+/// 主线程可在块之间穿插，避免长时间卡顿，且内存恒定。
 pub fn hash_file(path: &Path) -> std::io::Result<String> {
-    let bytes = std::fs::read(path)?;
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    hasher.write(&bytes);
+    let mut buf = vec![0u8; 256 * 1024]; // 256KB 块
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.write(&buf[..n]);
+    }
     Ok(format!("{:016x}", hasher.finish()))
 }
 
