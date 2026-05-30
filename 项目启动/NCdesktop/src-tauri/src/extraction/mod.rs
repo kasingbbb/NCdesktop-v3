@@ -15,6 +15,8 @@ pub mod pdf_annotations;
 // 由 task_002~007 全部铺好，scheduler.rs 主循环改造为 primary→fallback→placeholder
 // 三级编排。
 pub mod scheduler;
+// 视频→音频提取：ffmpeg 去视频轨保留音频（流拷贝优先，失败降级 AAC 重编码），输出 .m4a。
+pub mod video_audio;
 
 use std::path::Path;
 

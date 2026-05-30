@@ -32,3 +32,5 @@ pub mod categories;
 // task_020：KC 集成层 3 个 Tauri command（get_kc_health / restart_kc_process / set_kc_settings）。
 // 给前端 task_016 KcSettingsForm.tsx 提供 IPC 入口。
 pub mod kc;
+// 视频→音频：extract_audio_from_video 命令，ffmpeg 提取音轨（流拷贝优先，失败降级 AAC）。
+pub mod video_audio;
