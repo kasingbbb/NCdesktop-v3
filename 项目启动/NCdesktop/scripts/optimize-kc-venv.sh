@@ -96,17 +96,21 @@ if [[ ! -d "${KC_VENV}/lib" ]]; then
 fi
 
 # ---- 体积测量（剥离前）-----------------------------------------------------
-size_mb() {
-  # du -sm 在 macOS / Linux 上单位都是 MB（du -sk 也通用，这里直接 -sm）
-  du -sm "$1" 2>/dev/null | awk '{print $1}'
-}
+# 单位统一: 一律用 bytes 作为基准（du -sk → KB → *1024 bytes），MB 展示值由
+# bytes 整数除 1048576 派生，saved 用 bytes 差再转 MB。
+# 避免旧实现 du -sm 双重四舍五入（before/after 各自先 round 到 MB 再相减）
+# 导致 saved 偏差 ±1MB 的 bug。
 size_bytes() {
-  # du -sk * 1024 兜底（dry-run 报告也用得到）
+  # du -sk 在 macOS / Linux 上单位都是 1024-byte blocks（KB）；*1024 得 bytes
   du -sk "$1" 2>/dev/null | awk '{print $1 * 1024}'
 }
+bytes_to_mb() {
+  # 整数除 1048576（1 MB = 1024*1024 bytes）— 与 du -sm 同量级、单点取整
+  echo "$(( ${1:-0} / 1048576 ))"
+}
 
-SIZE_BEFORE_MB="$(size_mb "${KC_VENV}")"
 SIZE_BEFORE_BYTES="$(size_bytes "${KC_VENV}")"
+SIZE_BEFORE_MB="$(bytes_to_mb "${SIZE_BEFORE_BYTES}")"
 log "venv path: ${KC_VENV}"
 log "size before: ${SIZE_BEFORE_MB}MB (${SIZE_BEFORE_BYTES} bytes)"
 
@@ -181,11 +185,12 @@ else
 fi
 
 # ---- Step 6: 体积报告 + 阈值告警 -------------------------------------------
-SIZE_AFTER_MB="$(size_mb "${KC_VENV}")"
 SIZE_AFTER_BYTES="$(size_bytes "${KC_VENV}")"
-# 计算剥离量（MB），用 awk 避免 bash 算整数除法误差
-SAVED_MB="$(awk -v b="${SIZE_BEFORE_MB}" -v a="${SIZE_AFTER_MB}" 'BEGIN{print b - a}')"
-SAVED_PCT="$(awk -v b="${SIZE_BEFORE_MB}" -v a="${SIZE_AFTER_MB}" \
+SIZE_AFTER_MB="$(bytes_to_mb "${SIZE_AFTER_BYTES}")"
+# 用 bytes 差算 saved，再转 MB 展示（避免 du -sm 双重四舍五入）。
+SAVED_BYTES=$(( SIZE_BEFORE_BYTES - SIZE_AFTER_BYTES ))
+SAVED_MB="$(bytes_to_mb "${SAVED_BYTES}")"
+SAVED_PCT="$(awk -v b="${SIZE_BEFORE_BYTES}" -v a="${SIZE_AFTER_BYTES}" \
   'BEGIN{ if(b==0){print "0.0"} else {printf "%.1f", (b-a)*100.0/b} }')"
 
 log "Step 6/6: size report"

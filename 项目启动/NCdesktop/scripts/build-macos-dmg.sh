@@ -213,6 +213,22 @@ ln -sf "../../python/bin/python3"    "${RESOURCES_DIR}/markitdown-venv/bin/pytho
 ln -sf "../../python/bin/markitdown" "${RESOURCES_DIR}/markitdown-venv/bin/markitdown" 2>/dev/null || true
 ln -sf "../python/lib"               "${RESOURCES_DIR}/markitdown-venv/lib"
 
+# ── [step 4c/10] inject KC runtime + optimize kc-venv ───────────────────────
+# KC (Knowledge Compiler) runtime 注入到 .app/Contents/Resources/kc/。
+# 需 KC_REPO_PATH 环境变量指向 KnowledgeCompiler 仓库（含 compiler/ + run_api.py）。
+# 优雅降级：KC_REPO_PATH 未配置或无效时只 WARN + skip，不让整个 build 失败
+# （这样没有 KC repo 的人也能打出无 KC 功能的包）。
+# 顺序：必须在 sign-bundle.sh（step 5）之前，让 KC venv 一并进入反序签名覆盖。
+step "step 4c/10 inject KC runtime + optimize kc-venv"
+if [[ -n "${KC_REPO_PATH:-}" ]] && [[ -d "${KC_REPO_PATH}/compiler" ]] && [[ -f "${KC_REPO_PATH}/run_api.py" ]]; then
+  bash "${ROOT_DIR}/scripts/prepare-embedded-kc-runtime.sh" \
+    "${APP_BUNDLE_PATH}" "${KC_REPO_PATH}" python3.12
+  bash "${ROOT_DIR}/scripts/optimize-kc-venv.sh" \
+    --strip-bin "${RESOURCES_DIR}/kc/venv"
+else
+  echo "[build-macos-dmg] WARN: KC_REPO_PATH 未配置或无效，跳过 KC 注入（产出的 DMG 不含 KC 功能）"
+fi
+
 # ── [step 5/10] sign-bundle.sh (task_004 reverse-order signing) ─────────────
 step "step 5/10 sign-bundle"
 SIGN_IDENTITY="${CODESIGN_IDENTITY:-${APPLE_SIGN_IDENTITY:-}}"
