@@ -3,6 +3,8 @@
 pub mod models;
 pub mod db;
 pub mod commands;
+#[cfg(target_os = "macos")]
+pub mod macos;
 pub mod sync;
 pub mod audio;
 pub mod llm;
@@ -274,6 +276,7 @@ pub fn run() {
             commands::categories::set_category_disabled,
             commands::categories::delete_category,
             commands::categories::add_category_alias,
+            commands::video_audio::extract_audio_from_video,
             #[cfg(debug_assertions)]
             source_scan::source_scan_get_missing,
         ])

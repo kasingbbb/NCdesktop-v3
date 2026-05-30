@@ -12,6 +12,7 @@ pub mod scan_pdf_detect;
 // 由 task_002~007 全部铺好，scheduler.rs 主循环改造为 primary→fallback→placeholder
 // 三级编排。
 pub mod scheduler;
+pub mod video_audio;
 
 use std::path::Path;
 
