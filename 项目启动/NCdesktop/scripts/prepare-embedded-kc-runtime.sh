@@ -234,15 +234,32 @@ if os.path.exists(pyproject):
     except Exception as exc:  # pragma: no cover — defensive
         print(f"[prepare-kc-runtime] WARN: cannot parse pyproject: {exc}", file=sys.stderr)
 
-# 读现有 manifest（若存在）以保留 markitdown/python 字段
-manifest = {}
-if os.path.exists(manifest_path):
-    try:
-        with open(manifest_path, "r", encoding="utf-8") as fh:
-            manifest = json.load(fh)
-    except Exception as exc:
-        print(f"[prepare-kc-runtime] WARN: existing manifest invalid, recreating: {exc}", file=sys.stderr)
-        manifest = {}
+# 读现有 manifest 以保留 markitdown/python 字段。
+# D4 fail-fast：manifest 必须已由 prepare-embedded-markitdown-runtime.sh 先写好，
+# KC 注入只能 merge 不能新建。两种坏情况都直接 fail（绝不回退 {} 写回，否则会
+# clobber markitdown 顶层字段 runtime_id / markitdown / imports，导致 NC
+# runtime_check 报"内置转换运行时未就绪"）：
+#   1) 文件不存在 — markitdown 步骤未跑/失败或 APP_PATH 错。
+#   2) 文件损坏/读取失败 — 中断写入或非法 JSON。
+if not os.path.exists(manifest_path):
+    print(
+        f"[prepare-kc-runtime] ERROR: runtime-manifest.json 不存在: {manifest_path}\n"
+        f"[prepare-kc-runtime]   manifest 必须先由 prepare-embedded-markitdown-runtime.sh 写好；"
+        f"KC 注入只 merge 不新建。拒绝凭空创建（会缺 markitdown 字段）。",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+try:
+    with open(manifest_path, "r", encoding="utf-8") as fh:
+        manifest = json.load(fh)
+except Exception as exc:
+    print(
+        f"[prepare-kc-runtime] ERROR: existing manifest unreadable/corrupt: {exc}\n"
+        f"[prepare-kc-runtime]   manifest 必须先由 prepare-embedded-markitdown-runtime.sh 写好；"
+        f"KC 注入只 merge 不新建。拒绝以空对象覆盖（会丢 markitdown 字段）。",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 # 写 kc 字段（不动其他字段）
 manifest["kc"] = {
@@ -341,7 +358,15 @@ if __name__ == "__main__":
 '''
 with open(path, "w", encoding="utf-8") as fh:
     fh.write(new_content)
-print(f"[prepare-kc-runtime] KC-MOD-5 patch applied: {path}")
+
+# D3 守护：re-read 验证 patch 落地（防 KC upstream 版本漂移导致静默 no-op，
+# 打出缺 patch 的 DMG）。run_api.py 被整体重写，验证含 argparse 标志串。
+with open(path, "r", encoding="utf-8") as fh:
+    verify = fh.read()
+if "argparse" not in verify:
+    print(f"[prepare-kc-runtime] ERROR: KC-MOD-5 verify FAILED — 'argparse' 缺失于 {path}", file=sys.stderr)
+    sys.exit(1)
+print(f"[prepare-kc-runtime] KC-MOD-5 patch applied + verified: {path}")
 PYEOF
   else
     log "KC-MOD-5 already present (skipping patch)"
@@ -367,6 +392,7 @@ if [[ "${DRY_RUN}" != "1" ]] && [[ -f "${KC_MODELS_PATH}" ]] && [[ -f "${KC_ROUT
     log "applying KC-MOD-1 patch: models.py + routes.py enhanced_markdown field"
     "${PYTHON_BIN}" - <<'PYEOF'
 import os
+import sys
 mp = os.environ["KC_MODELS_PATH"]
 rp = os.environ["KC_ROUTES_PATH"]
 
@@ -419,7 +445,19 @@ r_content = r_content.replace(old_return, new_return, 1)
 with open(rp, "w", encoding="utf-8") as fh:
     fh.write(r_content)
 
-print(f"[prepare-kc-runtime] KC-MOD-1 patch applied: {mp}, {rp}")
+# D3 守护：re-read 两个目标文件验证 enhanced_markdown 字段落地（防 KC upstream
+# 改动导致 old_string 匹配不上、.replace 静默 no-op）。
+with open(mp, "r", encoding="utf-8") as fh:
+    m_verify = fh.read()
+with open(rp, "r", encoding="utf-8") as fh:
+    r_verify = fh.read()
+if "enhanced_markdown" not in m_verify:
+    print(f"[prepare-kc-runtime] ERROR: KC-MOD-1 verify FAILED — 'enhanced_markdown' 缺失于 {mp}", file=sys.stderr)
+    sys.exit(1)
+if "enhanced_markdown" not in r_verify:
+    print(f"[prepare-kc-runtime] ERROR: KC-MOD-1 verify FAILED — 'enhanced_markdown' 缺失于 {rp}", file=sys.stderr)
+    sys.exit(1)
+print(f"[prepare-kc-runtime] KC-MOD-1 patch applied + verified: {mp}, {rp}")
 PYEOF
   else
     log "KC-MOD-1 already present (skipping patch)"
@@ -440,6 +478,7 @@ if [[ "${DRY_RUN}" != "1" ]] && [[ -f "${KC_HEALTH_ROUTES_PATH}" ]]; then
     log "applying KC-MOD-7 patch: /health ai_enabled real key check"
     "${PYTHON_BIN}" - <<'PYEOF'
 import os
+import sys
 rp = os.environ["KC_HEALTH_ROUTES_PATH"]
 with open(rp, "r", encoding="utf-8") as fh:
     c = fh.read()
@@ -465,7 +504,15 @@ new = (
 c = c.replace(old, new, 1)
 with open(rp, "w", encoding="utf-8") as fh:
     fh.write(c)
-print(f"[prepare-kc-runtime] KC-MOD-7 patch applied: {rp}")
+
+# D3 守护：re-read 验证 ai_truly_enabled 落地（防 KC upstream 改 /health 返回块
+# 导致 old_string 匹配不上、.replace 静默 no-op）。
+with open(rp, "r", encoding="utf-8") as fh:
+    verify = fh.read()
+if "ai_truly_enabled" not in verify:
+    print(f"[prepare-kc-runtime] ERROR: KC-MOD-7 verify FAILED — 'ai_truly_enabled' 缺失于 {rp}", file=sys.stderr)
+    sys.exit(1)
+print(f"[prepare-kc-runtime] KC-MOD-7 patch applied + verified: {rp}")
 PYEOF
   else
     log "KC-MOD-7 already present (skipping patch)"
@@ -493,6 +540,31 @@ if [[ "${DRY_RUN}" != "1" ]] && [[ "$(uname -s)" == "Darwin" ]]; then
     log "  ad-hoc signed: ${SIGN_COUNT}    failed: ${SIGN_FAIL}"
   else
     log "WARN: codesign not found; native .so/.dylib may be SIGKILL'd by hardened runtime"
+  fi
+fi
+
+# ---- D2 BLOCKER: 同样给 Contents/Resources/python/ 下的 native lib 加签 -----
+# markitdown venv（prepare-embedded-markitdown-runtime.sh 注入）的 native .so
+# （例 PIL/_imaging.so）放在 ${APP_PATH}/Contents/Resources/python/ 下，经
+# markitdown-venv/lib symlink 被 dyld 加载。这里也必须 ad-hoc 签名，否则
+# macOS 14+ hardened runtime 下未签名 → 真机 SIGKILL。
+# 仅 macOS 跑；Linux / dry-run 跳过；目录可能不存在（容错跳过）。
+PYTHON_RESOURCE_DIR="${APP_PATH}/Contents/Resources/python"
+if [[ "${DRY_RUN}" != "1" ]] && [[ "$(uname -s)" == "Darwin" ]] && [[ -d "${PYTHON_RESOURCE_DIR}" ]]; then
+  if command -v codesign >/dev/null 2>&1; then
+    log "applying macOS ad-hoc codesign to all .so/.dylib under Resources/python"
+    PY_SIGN_COUNT=0
+    PY_SIGN_FAIL=0
+    while IFS= read -r -d '' sf; do
+      if codesign --force -s - --options runtime --timestamp=none "${sf}" >/dev/null 2>&1; then
+        PY_SIGN_COUNT=$((PY_SIGN_COUNT + 1))
+      else
+        PY_SIGN_FAIL=$((PY_SIGN_FAIL + 1))
+      fi
+    done < <(find "${PYTHON_RESOURCE_DIR}" -type f \( -name "*.so" -o -name "*.dylib" \) -print0 2>/dev/null)
+    log "  ad-hoc signed (python/): ${PY_SIGN_COUNT}    failed: ${PY_SIGN_FAIL}"
+  else
+    log "WARN: codesign not found; native .so/.dylib under python/ may be SIGKILL'd by hardened runtime"
   fi
 fi
 
