@@ -225,6 +225,23 @@ if [[ -n "${KC_REPO_PATH:-}" ]] && [[ -d "${KC_REPO_PATH}/compiler" ]] && [[ -f 
     "${APP_BUNDLE_PATH}" "${KC_REPO_PATH}" python3.12
   bash "${ROOT_DIR}/scripts/optimize-kc-venv.sh" \
     --strip-bin "${RESOURCES_DIR}/kc/venv"
+
+  # 2026-05-31 修复（真机 BLOCKER）：optimize 的 `--strip-bin` 会改写 Mach-O，
+  # 使 numpy/scipy/faiss/hdbscan 等原生扩展的代码签名失效（codesign -v 报
+  # "code or signature have been modified"）→ 运行时 macOS AMFI 直接 SIGKILL(137)，
+  # KC sidecar 一 import 这些库就崩、enrich 静默回退、用户看不到 KC 效果。
+  # 修：strip 之后对 KC venv 内所有 .so/.dylib 做 ad-hoc 重签，恢复可加载的有效签名。
+  # （若设了 CODESIGN_IDENTITY，step 5 的 sign-bundle 会再做正式深签覆盖，本步无害。）
+  KC_SIGN_OK=0
+  KC_SIGN_FAIL=0
+  while IFS= read -r -d '' lib; do
+    if codesign --force -s - --timestamp=none "${lib}" >/dev/null 2>&1; then
+      KC_SIGN_OK=$((KC_SIGN_OK + 1))
+    else
+      KC_SIGN_FAIL=$((KC_SIGN_FAIL + 1))
+    fi
+  done < <(find "${RESOURCES_DIR}/kc/venv" \( -name '*.so' -o -name '*.dylib' \) -print0)
+  echo "[build-macos-dmg] KC venv ad-hoc 重签 .so/.dylib: ok=${KC_SIGN_OK} fail=${KC_SIGN_FAIL}"
 else
   echo "[build-macos-dmg] WARN: KC_REPO_PATH 未配置或无效，跳过 KC 注入（产出的 DMG 不含 KC 功能）"
 fi
