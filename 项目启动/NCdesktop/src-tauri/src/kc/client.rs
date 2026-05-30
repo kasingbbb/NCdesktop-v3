@@ -345,6 +345,8 @@ fn classify_reqwest_error(e: reqwest::Error) -> KcCallError {
 /// - `enhanced_markdown` —— 非空字符串；
 /// - 其他 meta 字段（`doc_id` / `kc_version` / `generated_at` / `paragraph_count`）—— 缺失时走 default
 ///   而非 Malformed（防御性容错，KC 端字段可能渐进增加；`enhanced_markdown` 才是核心契约）。
+///   default 值统一约定：`kc_version` / `generated_at` 缺失 fallback `"unknown"`（而非 `""`，
+///   避免 frontmatter 出现空串字段；Bug A 修复），`generated_at` 缺失时额外 `log::warn!` 一条。
 ///
 /// **meta.tags_source 判定逻辑**：
 /// - KC 返回 `ai_tags` 非空 → `AiAndRule`（KC 正常成功路径）；
@@ -360,6 +362,18 @@ fn parse_success_body(
     let json: Value = match serde_json::from_slice(body_bytes) {
         Ok(v) => v,
         Err(e) => {
+            // Bug B 诊断：真机抓到 KC `/ingest` 响应的 `enhanced_markdown` 含未转义换行
+            // （原始 0x0a），严格 JSON parser 报 "Invalid control character"。NC 实测多数能成功，
+            // 这里只加可诊断日志（不实现宽松解析器）：记录 reason + body 前 256 字节预览，
+            // **预览务必走 mask_secrets_by_prefix**，防 body 中含 Key 明文落盘到日志。
+            const PREVIEW_LEN: usize = 256;
+            let preview = String::from_utf8_lossy(&body_bytes[..body_bytes.len().min(PREVIEW_LEN)]);
+            log::warn!(
+                "[kc] ingest 200 响应 body JSON 解析失败（{} 字节）：reason={e}；body 前 {} 字节预览（已 mask Key）：{}",
+                body_bytes.len(),
+                PREVIEW_LEN.min(body_bytes.len()),
+                mask_secrets_by_prefix(&preview)
+            );
             return Err(KcCallError::Malformed {
                 reason: format!("body not valid JSON: {e}"),
             });
@@ -387,12 +401,21 @@ fn parse_success_body(
         .and_then(Value::as_str)
         .unwrap_or("unknown")
         .to_string();
-    let generated_at = json
+    // generated_at：缺失时 fallback "unknown"（与 kc_version 对齐，避免 frontmatter
+    // 出现 `kc_generated_at: ""`），并 warn 一条提示 KC 响应缺该字段（Bug A 修复）。
+    let generated_at = match json
         .get("kc_generated_at")
         .or_else(|| json.get("generated_at"))
         .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
+    {
+        Some(s) => s.to_string(),
+        None => {
+            log::warn!(
+                "[kc] ingest 成功响应缺 kc_generated_at/generated_at 字段，fallback \"unknown\"（doc_id={doc_id}）"
+            );
+            "unknown".to_string()
+        }
+    };
     let paragraph_count = json
         .get("paragraph_count")
         .and_then(Value::as_u64)
@@ -940,6 +963,33 @@ mod tests {
                 assert_eq!(meta.paragraph_count, 0);
                 assert!(meta.ai_tags.is_empty());
                 assert!(meta.ai_summary.is_none());
+            }
+        }
+    }
+
+    /// Bug A 回归：成功响应缺 `kc_generated_at`/`generated_at` 时，
+    /// `meta.generated_at` 必须 fallback `"unknown"` 而非空串 `""`
+    /// （避免产物 frontmatter 出现 `kc_generated_at: ""`）。
+    #[test]
+    fn parse_success_body_missing_generated_at_falls_back_to_unknown() {
+        // 完整 meta 但**故意缺** kc_generated_at / generated_at 两个 key。
+        let body = br##"{
+            "success": true,
+            "doc_id": "doc-no-ts",
+            "enhanced_markdown": "# x",
+            "kc_version": "0.9",
+            "paragraph_count": 1
+        }"##;
+        let outcome = parse_success_body(body, body.len(), 0).expect("应当解析成功");
+        match outcome {
+            KcIngestOutcome::Success { meta, .. } => {
+                assert_eq!(
+                    meta.generated_at, "unknown",
+                    "缺 generated_at 应 fallback \"unknown\"，不可为空串"
+                );
+                assert_ne!(meta.generated_at, "", "generated_at 不可为空串");
+                // 与 kc_version fallback 语义对齐（此处 kc_version 有值，仅确认非空）。
+                assert_eq!(meta.kc_version, "0.9");
             }
         }
     }
