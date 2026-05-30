@@ -928,8 +928,19 @@ pub async fn import_drop_paths(
         (pid, pname)
     };
 
-    let scheduler_adapter = AppHandleEnqueue { app: &app };
-    let core_out = import_files_core(&database.pool, &scheduler_adapter, &project_id, paths)?;
+    // import_files_core 是同步且可能耗时的（尤其视频导入要跑 ffmpeg 抽音频，大文件可达数秒）。
+    // 若直接在该 async 命令里同步执行，会阻塞 Tauri 的 async runtime worker，悬浮窗/主窗 UI
+    // 卡死（用户实测：mp4 拖入悬浮窗即卡死）。这里挪到 blocking 线程池执行。
+    // 注：import_files_core 全程不跨 await 持有 DB MutexGuard，放进 blocking 线程安全。
+    let pool = database.pool.clone();
+    let app_for_core = app.clone();
+    let project_id_for_core = project_id.clone();
+    let core_out = tokio::task::spawn_blocking(move || {
+        let scheduler_adapter = AppHandleEnqueue { app: &app_for_core };
+        import_files_core(&pool, &scheduler_adapter, &project_id_for_core, paths)
+    })
+    .await
+    .map_err(|e| format!("导入任务执行失败（blocking join）: {e}"))??;
 
     // 若 created 非空且至少有一个成功入队，则唤醒调度循环
     let any_enqueued = core_out.summary.created.len() > core_out.summary.failures_to_enqueue.len();
