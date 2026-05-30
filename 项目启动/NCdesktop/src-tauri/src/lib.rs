@@ -281,6 +281,8 @@ pub fn run() {
             commands::sync::mark_card_imported,
             commands::audio::get_audio_metadata,
             commands::audio::get_waveform_data,
+            // 视频→音频提取（导入 mp4 自动抽音频；亦供前端手动调用）
+            commands::video_audio::extract_audio_from_video,
             // W2: 悬浮窗
             commands::dropzone::create_dropzone_window,
             commands::dropzone::close_dropzone_window,

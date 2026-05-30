@@ -8,6 +8,8 @@ pub mod search;
 pub mod settings;
 pub mod sync;
 pub mod audio;
+// 视频→音频提取命令（ffmpeg）。导入 mp4/mov 时自动抽音频；本命令亦供前端手动调用。
+pub mod video_audio;
 pub mod dropzone;
 pub mod export;
 pub mod llm;

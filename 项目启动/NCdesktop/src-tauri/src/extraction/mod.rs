@@ -15,6 +15,9 @@ pub mod pdf_annotations;
 // 由 task_002~007 全部铺好，scheduler.rs 主循环改造为 primary→fallback→placeholder
 // 三级编排。
 pub mod scheduler;
+// 视频→音频提取（ffmpeg）。导入 mp4/mov 等时先抽 .m4a，工作区只置入音频（丢弃视频本体），
+// 随后走 audio_asr_iflytek 语音转写。由 commands::dropzone::import_files_core 调用。
+pub mod video_audio;
 
 use std::path::Path;
 
