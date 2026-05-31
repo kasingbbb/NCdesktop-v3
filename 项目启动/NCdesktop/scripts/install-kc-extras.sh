@@ -60,6 +60,16 @@ import torch
 print("  torch device test:", torch.tensor([1.0]).sum().item())
 PY
 
+# 预热 KC embedder 模型（BAAI/bge-small-zh-v1.5，~100MB），下载到默认 HF 缓存
+# (~/.cache/huggingface)，与 app 内 KC 子进程同一用户共享，避免首次摄入卡在下载。
+echo "[install-kc-extras] 预下载 embedding 模型 BAAI/bge-small-zh-v1.5（~100MB）…"
+PYTHONPATH="${EXTRAS_DIR}" "${EMB_PY}" - <<'PY'
+from sentence_transformers import SentenceTransformer
+m = SentenceTransformer("BAAI/bge-small-zh-v1.5")
+v = m.encode(["四步创业法 测试句子"])
+print("  模型就绪，向量维度:", len(v[0]))
+PY
+
 DU=$(du -sh "${EXTRAS_DIR}" 2>/dev/null | awk '{print $1}')
 echo "[install-kc-extras] 完成。kc_extras 体积：${DU}"
-echo "[install-kc-extras] 重启 NoteCapt 后，v2 pipeline_b（聚类/术语）即解锁全质量。"
+echo "[install-kc-extras] 重启 NoteCapt 后，v2 pipeline_b（聚类/术语/master_index 主题分类）即解锁全质量。"
