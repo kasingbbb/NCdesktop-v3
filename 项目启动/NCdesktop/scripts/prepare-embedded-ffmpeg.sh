@@ -57,9 +57,14 @@ verify_sha256() {
   [[ "${got}" == "${FFMPEG_SHA256}" ]]
 }
 
-# ---- 幂等: 已存在且校验通过则跳过 ------------------------------------------
-if [[ "${FORCE}" != "1" && -x "${FFMPEG_OUT}" ]] && verify_sha256 "${FFMPEG_OUT}"; then
-  echo "[prepare-embedded-ffmpeg] ffmpeg already present + sha256 ok, skipping (use --force to redownload)"
+# ---- 幂等: 已存在且功能正常则跳过 ------------------------------------------
+# 注意：不能再比 sha256——本脚本末尾会 ad-hoc 重签，改动二进制字节，使 sha256
+# 与下载常量不再相等。改用功能性判据（可执行 + 仅系统库 + -version 可跑），
+# 对"已签名的同一个 ffmpeg"稳定为真，避免每次构建白下 43M。
+if [[ "${FORCE}" != "1" && -x "${FFMPEG_OUT}" ]] \
+   && ! otool -L "${FFMPEG_OUT}" 2>/dev/null | grep -qE "/opt/homebrew|/usr/local/" \
+   && "${FFMPEG_OUT}" -version >/dev/null 2>&1; then
+  echo "[prepare-embedded-ffmpeg] ffmpeg already present + functional, skipping (use --force to redownload)"
   exit 0
 fi
 
