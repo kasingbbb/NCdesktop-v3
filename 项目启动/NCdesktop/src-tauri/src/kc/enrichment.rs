@@ -145,6 +145,12 @@ pub struct ResolvedEnrichment {
 /// - **不输出 Key**：所有日志走 `kc::settings::log_with_mask(&settings)`（task_010）；
 /// - **emit payload 不含 Key**：仅 `assetId` / `kcEnriched` / `failureCode` 三个字段。
 pub async fn enrich(app: &AppHandle, asset: &Asset, raw_md: &str) -> KcEnrichmentOutcome {
+    // KC python 子进程对**并发 ingest 非线程安全**：其原生依赖（numpy/faiss/scipy 等）
+    // 在并发请求下会踩内存 → SIGBUS 崩溃。提取流水线并行化后，多个文档会并发打
+    // `/ingest`（实测日志：同时刻 2 个 doc 走不同端口）→ KC python 子进程 SIGBUS。
+    // 这里用函数级全局锁把进入 KC 的 ingest **串行化**：提取仍并行，仅 KC 握手一次一个。
+    static KC_INGEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     // ---- 步骤 1：读 KcSettings ----
     let settings = read_kc_settings(app);
 
@@ -164,6 +170,10 @@ pub async fn enrich(app: &AppHandle, asset: &Asset, raw_md: &str) -> KcEnrichmen
         emit_kc_enriched(app, &asset.id, &outcome);
         return outcome;
     }
+
+    // 串行化 KC ingest（见函数顶部 KC_INGEST_LOCK 说明）。guard 持有至函数结束，
+    // 覆盖下方 client.ingest_text(.await)，确保任一时刻只有一个 ingest 在 KC 内执行。
+    let _kc_serial = KC_INGEST_LOCK.lock().await;
 
     // ---- 步骤 2 + 3：取 KcProcessManager + KcClient state ----
     let client = match resolve_kc_dependencies(app) {
