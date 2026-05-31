@@ -399,7 +399,22 @@ impl KcProcessManager {
                 .stderr(Stdio::piped())
                 .current_dir(&kc_runtime_dir)
                 // ADR-006 层 2：让 KC 即便误写 wiki/ 也写在 NC 控制的临时目录。
-                .env("WIKI_DIR", kc_runtime_dir.to_string_lossy().to_string());
+                .env("WIKI_DIR", kc_runtime_dir.to_string_lossy().to_string())
+                // Phase 0 真机修复（2026-05-31）：v2 notecapt 管线启动时会 init 一个
+                // SQLite 库（pipeline.py: PROJECT_ROOT / NOTECAPT_DB_PATH）。默认
+                // PROJECT_ROOT = bundle 内 kc/src/compiler（**只读**，尤其从 DMG 挂载点
+                // /Volumes/... 直接运行时）→ "unable to open database file" → KC 启动失败
+                // → 所有导入回退 raw markitdown（用户实测 v2 不生效的真因）。
+                // 这里把 NOTECAPT_DB_PATH 覆盖成 kc_runtime_dir 下的**绝对可写路径**
+                // （pathlib: 绝对右操作数胜出，PROJECT_ROOT 被忽略；该字段是 pydantic
+                // BaseSettings，env 可覆盖）。SQLitePool.init 会自建父目录。
+                .env(
+                    "NOTECAPT_DB_PATH",
+                    kc_runtime_dir
+                        .join("notecapt_db/notecapt.sqlite3")
+                        .to_string_lossy()
+                        .to_string(),
+                );
 
             // ADR-007：env 注入（仅 Some 时设；None 时让 KC 内部走未配置兜底）。
             if let Some(ref k) = zhipu_key {
@@ -905,8 +920,27 @@ pub fn detect_embedded_kc_python(app: &AppHandle) -> Option<String> {
 /// `PYTHONPATH` 条目，无副作用。返回字符串供 `Command::env` 使用。
 fn kc_site_packages_pythonpath(app: &AppHandle) -> Option<String> {
     let resource_dir = app.path().resource_dir().ok()?;
+    let mut parts: Vec<String> = Vec::new();
+
+    // (1) bundle 内 KC 核心依赖（fastapi/uvicorn/pydantic/numpy/faiss/...，随 .app 签名）。
     let sp = resource_dir.join("kc/venv/lib/python3.12/site-packages");
-    Some(sp.to_string_lossy().to_string())
+    parts.push(sp.to_string_lossy().to_string());
+
+    // (2) 可选：bundle **外** kc_extras（torch / sentence-transformers 等大件）。
+    //   质量优先方案（用户拍板）：不把 torch 打进 DMG（会从 ~300M 膨胀到 ~2.3GB），
+    //   改由用户把对应 wheel 装/拷到 app 数据目录 `kc_extras/site-packages`，本地即可
+    //   解锁 v2 pipeline_b（跨文档聚类 / 术语）的全质量。存在才追加；放在 bundle
+    //   site-packages **之后**，只补充不覆盖核心依赖版本。
+    //   安装方式见 scripts/install-kc-extras.sh（用嵌入 pbs python 装，保证 ABI 一致）。
+    if let Ok(data_dir) = app.path().app_data_dir() {
+        let extras = data_dir.join("kc_extras/site-packages");
+        if extras.is_dir() {
+            parts.push(extras.to_string_lossy().to_string());
+            log::info!("[kc] kc_extras 已挂载到 PYTHONPATH: {}", extras.display());
+        }
+    }
+
+    Some(parts.join(":"))
 }
 
 /// dev 模式从 cwd 向上找 `KnowledgeCompiler/.venv/bin/python`。

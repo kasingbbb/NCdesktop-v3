@@ -55,7 +55,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::extraction::failure_code::FailureCode;
 use crate::extraction::models::ExtractionResult;
-use crate::kc::client::{KcClient, KcIngestOptions, KcIngestOutcome};
+use crate::kc::client::{KcClient, KcIngestOptions, KcIngestOutcome, KcV2Outcome};
 use crate::kc::errors::{
     KcCallError, KcEnrichmentOutcome, KcFallbackReason, KcMeta, KcTagsSource,
 };
@@ -233,6 +233,175 @@ pub async fn enrich(app: &AppHandle, asset: &Asset, raw_md: &str) -> KcEnrichmen
     emit_kc_enriched(app, &asset.id, &outcome);
 
     outcome
+}
+
+// =====================================================================
+// Phase 0：v2 管线（逐文档）增强路径
+// =====================================================================
+
+/// v2 管线对单个 asset 的产物：enhanced 全文 + 项目 master_index。
+#[derive(Debug, Clone)]
+pub struct KcV2Materialized {
+    /// 该文档 enhanced 全文（含 `@notecapt-prompt` 标记 / 锚点 / callout）。
+    pub enhanced_md: String,
+    /// 项目 master_index 全文（逐文档 → 单文档索引）。
+    pub master_index: String,
+    /// KC 侧 doc_id（`doc-<stem[:16]>`）。
+    pub doc_id: String,
+}
+
+/// 兜底：确保 markitdown 追加的 "## 用户标记" 段出现在最终 md 里。
+///
+/// v2 管线（开 LLM 时）可能重排/丢该段；这里若 `enhanced` 里没有而 `raw_md` 里有，
+/// 就把 raw_md 中 `## 用户标记` 到结尾的整段原样补到 enhanced 末尾。幂等（已含则跳过）。
+fn ensure_annotation_section(enhanced: String, raw_md: &str) -> String {
+    const MARK: &str = "## 用户标记";
+    if enhanced.contains(MARK) {
+        return enhanced;
+    }
+    if let Some(idx) = raw_md.find(MARK) {
+        let section = &raw_md[idx..];
+        let mut out = enhanced;
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str("\n");
+        out.push_str(section);
+        return out;
+    }
+    enhanced
+}
+
+/// Phase 0（逐文档）：把 markitdown 的 `raw_md` 落临时 .md →
+/// 调 `/api/v2/pipeline/ingest`（`include_content`）→ 取该文档 enhanced + 项目 master_index。
+///
+/// 任一前置缺失（KC disabled / 不可达）或调用失败 → 返回 `None`，调用方回退 v1 enrich。
+/// **不向上抛**——与 [`enrich`] 一致，KC 异常绝不阻断主链路（PRD §4.3）。
+pub async fn enrich_v2(app: &AppHandle, asset: &Asset, raw_md: &str) -> Option<KcV2Materialized> {
+    let settings = read_kc_settings(app);
+    if !settings.enabled {
+        return None;
+    }
+
+    let client = match resolve_kc_dependencies(app) {
+        Ok(c) => c,
+        Err(skip) => {
+            log_with_mask(
+                log::Level::Info,
+                &format!(
+                    "[kc::enrich_v2] asset={} KC 依赖未就绪 ({:?})，回退 v1",
+                    asset.id, skip
+                ),
+                &settings,
+            );
+            return None;
+        }
+    };
+
+    // v2 吃文件路径：把 markitdown md 落到 per-asset 临时目录。文件名用干净 stem
+    // （决定 enhanced 的 title / doc_id）；子目录用 asset.id 保唯一、避免并发碰撞。
+    let stem_raw = std::path::Path::new(&asset.name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("document");
+    let stem = crate::utils::safe_name::sanitize_stem(stem_raw);
+    let tmp_dir = std::env::temp_dir().join("notecapt_kc_v2_in").join(&asset.id);
+    if let Err(e) = std::fs::create_dir_all(&tmp_dir) {
+        log_with_mask(
+            log::Level::Warn,
+            &format!("[kc::enrich_v2] 临时目录创建失败: {e}"),
+            &settings,
+        );
+        return None;
+    }
+    let tmp_path = tmp_dir.join(format!("{stem}.md"));
+    if let Err(e) = std::fs::write(&tmp_path, raw_md) {
+        log_with_mask(
+            log::Level::Warn,
+            &format!("[kc::enrich_v2] 临时 md 写入失败: {e}"),
+            &settings,
+        );
+        return None;
+    }
+
+    // use_llm：用户配了 Key 且 use_ai 时启用创造层（质量优先）；否则骨架兜底。
+    let use_llm =
+        settings.use_ai && (settings.zhipu_api_key.is_some() || settings.openai_api_key.is_some());
+    let project_name = if stem.is_empty() {
+        "NoteCapt".to_string()
+    } else {
+        stem.clone()
+    };
+    let sources = vec![tmp_path.to_string_lossy().to_string()];
+
+    emit_kc_queued(app, &asset.id);
+    let result = client
+        .ingest_v2_pipeline(&sources, &project_name, use_llm)
+        .await;
+
+    // 清理临时文件（失败不致命）。
+    let _ = std::fs::remove_file(&tmp_path);
+    let _ = std::fs::remove_dir(&tmp_dir);
+
+    let outcome: KcV2Outcome = match result {
+        Ok(o) => o,
+        Err(e) => {
+            log_with_mask(
+                log::Level::Warn,
+                &format!(
+                    "[kc::enrich_v2] asset={} v2 调用失败 ({:?})，回退 v1",
+                    asset.id, e
+                ),
+                &settings,
+            );
+            return None;
+        }
+    };
+
+    if !outcome.errors.is_empty() {
+        log_with_mask(
+            log::Level::Info,
+            &format!(
+                "[kc::enrich_v2] asset={} v2 非致命告警: {:?}",
+                asset.id, outcome.errors
+            ),
+            &settings,
+        );
+    }
+
+    // 逐文档：enhanced_files 取唯一/第一个文档。
+    let (doc_id, enhanced_md) = outcome.enhanced_files.into_iter().next()?;
+    // 保险：v2（尤其开 LLM 创造层时）可能改写/丢弃 markitdown 追加的 "## 用户标记"
+    // 段。若原始 md 有该段而 v2 enhanced 没有，则原样补回末尾，确保用户 PDF
+    // 高亮/批注绝不因走 v2 而丢失（与 PDF 标记竞态修复互为兜底）。
+    let enhanced_md = ensure_annotation_section(enhanced_md, raw_md);
+    if enhanced_md.trim().is_empty() {
+        log_with_mask(
+            log::Level::Warn,
+            &format!("[kc::enrich_v2] asset={} enhanced 为空，回退 v1", asset.id),
+            &settings,
+        );
+        return None;
+    }
+
+    log_with_mask(
+        log::Level::Info,
+        &format!(
+            "[kc::enrich_v2] asset={} v2 成功 doc_id={} enhanced={}B index={}B use_llm={}",
+            asset.id,
+            doc_id,
+            enhanced_md.len(),
+            outcome.master_index.len(),
+            use_llm
+        ),
+        &settings,
+    );
+
+    Some(KcV2Materialized {
+        enhanced_md,
+        master_index: outcome.master_index,
+        doc_id,
+    })
 }
 
 /// 把 `KcCallError` 6 变体映射为 `KcEnrichmentOutcome` 三态（ADR-004 §"5 类失败映射"完整表）。

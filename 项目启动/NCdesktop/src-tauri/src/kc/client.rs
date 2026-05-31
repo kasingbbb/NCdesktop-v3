@@ -135,6 +135,43 @@ pub enum KcIngestOutcome {
     },
 }
 
+// ---------------------------------------------------------------------
+// Phase 0：v2 多文档管线产物类型（`/api/v2/pipeline/ingest`）
+// ---------------------------------------------------------------------
+
+/// v2 管线单文档元信息（对应响应 `documents[]`）。
+#[derive(Debug, Clone)]
+pub struct KcV2Document {
+    /// `doc-<stem[:16]>`，与 `enhanced_files` 的 key 对应。
+    pub doc_id: String,
+    pub title: String,
+    pub source_type: String,
+    pub chapters: u32,
+    /// 数据健康度（ok / truncated / ...）。
+    pub health: String,
+}
+
+/// v2 `/ingest`（`include_content=true`）的完整产物。
+///
+/// 与 v1 `KcIngestOutcome::Success` 的"单篇 enhanced 文本"不同，v2 是**项目级**：
+/// 每个文档一份 enhanced 全文 + 一份项目 master_index + glossary + 时间线。
+#[derive(Debug, Clone)]
+pub struct KcV2Outcome {
+    pub documents: Vec<KcV2Document>,
+    /// doc_id → enhanced 全文（已含 `@notecapt-prompt` 标记 / 锚点 / callout）。
+    pub enhanced_files: std::collections::HashMap<String, String>,
+    /// 项目总目录全文（master_index）。
+    pub master_index: String,
+    /// 术语表全文（可能为空串）。
+    pub glossary: String,
+    /// date → 时间线全文。
+    pub timelines: std::collections::HashMap<String, String>,
+    /// KC 侧非致命错误（如 pipeline_b 降级）。
+    pub errors: Vec<String>,
+    /// 客户端测得的端到端耗时（ms）。
+    pub duration_ms: u64,
+}
+
 // =====================================================================
 // 4. KcClient 主类型
 // =====================================================================
@@ -300,11 +337,168 @@ impl KcClient {
             })
         }
     }
+
+    /// Phase 0：调用 KC `/api/v2/pipeline/ingest`（4 层 notecapt 管线），返回**完整产物**
+    /// （`include_content=true`）。与 `ingest_text`（v1 单篇）相对，这是**多文档项目级**摄入。
+    ///
+    /// - `source_files`：markdown 文件**绝对路径**列表（app 先把 markitdown 产物落临时文件）；
+    /// - `project_name`：用于 master_index 的项目名；
+    /// - `use_llm`：是否启用 LLM 创造层（关闭走骨架兜底，仍返回结构化 enhanced）。
+    ///
+    /// 复用同一 `Semaphore(1)`：v1/v2 共同串行，确保 KC 子进程同一时刻只处理一个 ingest。
+    /// 超时单独放宽到 300s（v2 多阶段 + 可选 LLM 远比 v1 单篇慢），覆盖 client 默认 60s。
+    pub async fn ingest_v2_pipeline(
+        &self,
+        source_files: &[String],
+        project_name: &str,
+        use_llm: bool,
+    ) -> Result<KcV2Outcome, KcCallError> {
+        let _permit = self
+            .semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("KcClient semaphore never closed");
+
+        let port = match self.port_provider.current_port() {
+            Some(p) => p,
+            None => return Err(KcCallError::Unreachable),
+        };
+
+        let url = format!("http://127.0.0.1:{port}/api/v2/pipeline/ingest");
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let body = serde_json::json!({
+            "source_files": source_files,
+            "project_name": project_name,
+            "use_llm": use_llm,
+            "include_content": true,
+        });
+
+        let start = std::time::Instant::now();
+        let response_result = self
+            .http
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("X-Request-Id", &request_id)
+            .timeout(Duration::from_secs(300))
+            .json(&body)
+            .send()
+            .await;
+
+        let response = match response_result {
+            Ok(r) => r,
+            Err(e) => return Err(classify_reqwest_error(e)),
+        };
+        let status = response.status();
+        let body_bytes = match response.bytes().await {
+            Ok(b) => b,
+            Err(e) => return Err(classify_reqwest_error(e)),
+        };
+        let duration_ms = start.elapsed().as_millis() as u64;
+
+        if status.is_success() {
+            parse_v2_body(&body_bytes, duration_ms)
+        } else if status.as_u16() == 500 {
+            Err(classify_500_body(&body_bytes))
+        } else if status.as_u16() == 404 {
+            Err(KcCallError::Internal {
+                detail: "v2 source file(s) not found (404)".into(),
+                code: "V2_FILE_MISSING".into(),
+            })
+        } else {
+            Err(KcCallError::Internal {
+                detail: format!("unexpected v2 status {}", status.as_u16()),
+                code: "UNKNOWN".into(),
+            })
+        }
+    }
 }
 
 // =====================================================================
 // 5. 错误分类辅助
 // =====================================================================
+
+/// 解析 v2 `/ingest`（`include_content=true`）的 200 响应体为 `KcV2Outcome`。
+///
+/// `content` 为 null（include_content 未生效）或 `enhanced_files` 为空 → `Malformed`。
+fn parse_v2_body(bytes: &[u8], duration_ms: u64) -> Result<KcV2Outcome, KcCallError> {
+    let v: Value = serde_json::from_slice(bytes).map_err(|e| KcCallError::Malformed {
+        reason: format!("v2 响应非合法 JSON：{e}"),
+    })?;
+
+    let content = match v.get("content") {
+        Some(c) if !c.is_null() => c,
+        _ => {
+            return Err(KcCallError::Malformed {
+                reason: "v2 响应缺 content（include_content 未生效？）".into(),
+            })
+        }
+    };
+
+    let str_map = |val: Option<&Value>| -> std::collections::HashMap<String, String> {
+        val.and_then(|x| x.as_object())
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, val)| val.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    let enhanced_files = str_map(content.get("enhanced_files"));
+    if enhanced_files.is_empty() {
+        return Err(KcCallError::Malformed {
+            reason: "v2 content.enhanced_files 为空".into(),
+        });
+    }
+    let master_index = content
+        .get("master_index")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    let glossary = content
+        .get("glossary")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    let timelines = str_map(content.get("timelines"));
+
+    let documents = v
+        .get("documents")
+        .and_then(|x| x.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|d| KcV2Document {
+                    doc_id: d.get("doc_id").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                    title: d.get("title").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                    source_type: d
+                        .get("source_type")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    chapters: d.get("chapters").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+                    health: d.get("health").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let errors = v
+        .get("errors")
+        .and_then(|x| x.as_array())
+        .map(|arr| arr.iter().filter_map(|e| e.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+
+    Ok(KcV2Outcome {
+        documents,
+        enhanced_files,
+        master_index,
+        glossary,
+        timelines,
+        errors,
+        duration_ms,
+    })
+}
 
 /// 把 `reqwest::Error` 分类成 `KcCallError`（AC-4 reqwest 错误侧）。
 ///

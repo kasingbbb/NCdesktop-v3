@@ -1085,6 +1085,34 @@ fn write_derivative_md(
 }
 
 /// 成功路径：抽取结果已落库，将 structured_md 物化到工作区
+/// Phase 0：把 v2 `master_index` 落到工作区（与 asset 的 .md 同目录）。
+///
+/// 逐文档 → 文件名 `<stem>_master_index.md`，避免覆盖其它文档的索引。空内容跳过。
+/// 失败仅 `log::warn`，不阻断主链路。
+fn write_master_index(source_asset: &crate::models::Asset, master_index: &str) {
+    if master_index.trim().is_empty() {
+        return;
+    }
+    let workspace_dir = match crate::workspace::ensure_project_workspace(&source_asset.project_id) {
+        Ok(d) => d,
+        Err(e) => {
+            log::warn!("写 master_index：无法创建工作区目录: {e}");
+            return;
+        }
+    };
+    let stem_raw = Path::new(&source_asset.name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("content");
+    let stem = crate::utils::safe_name::sanitize_stem(stem_raw);
+    let target = workspace_dir.join(format!("{stem}_master_index.md"));
+    if let Err(e) = std::fs::write(&target, master_index) {
+        log::warn!("写 master_index：写出失败 {}: {e}", target.display());
+    } else {
+        log::info!("Phase0 v2：master_index 落工作区 {}", target.display());
+    }
+}
+
 fn materialize_md(
     app: &AppHandle,
     source_asset: &crate::models::Asset,
@@ -1406,20 +1434,35 @@ async fn save_and_materialize(
         if source_asset_is_markdown(asset) {
             materialize_source_markdown(app, asset);
         } else {
-            // ===== task_012：KC enrichment 注入（≤ 25 行）===========================
-            let kc_outcome = crate::kc::enrichment::enrich(app, asset, &r.structured_md).await;
-            let resolved = crate::kc::enrichment::resolve_outcome(r, kc_outcome, |meta| {
-                crate::kc::frontmatter::build_kc_frontmatter(asset, r, meta)
-            });
-            kc_persist_resolved(app, asset, &resolved);
-            materialize_md(
-                app,
-                asset,
-                &resolved.final_md,
-                r.quality_level,
-                &resolved.extractor_type,
-            );
-            // ===== task_012 注入结束 ============================================
+            // ===== Phase 0（逐文档）：优先 v2 管线，失败回退 v1 =====================
+            // v2 产出 enhanced（含 @notecapt 标记/锚点/callout）+ 项目 master_index，
+            // 直接落工作区（enhanced → asset 的 .md，master_index → 同目录索引文件）。
+            // enrich_v2 任一前置/调用失败返回 None → 走下方原 task_012 v1 路径，零回归。
+            if let Some(v2) = crate::kc::enrichment::enrich_v2(app, asset, &r.structured_md).await {
+                materialize_md(app, asset, &v2.enhanced_md, r.quality_level, "kc_v2_pipeline");
+                write_master_index(asset, &v2.master_index);
+                log::info!(
+                    "Phase0 v2：asset={} enhanced 物化完成 doc_id={}",
+                    asset.id,
+                    v2.doc_id
+                );
+            } else {
+                // ===== task_012：KC enrichment 注入（v1 回退）=======================
+                let kc_outcome =
+                    crate::kc::enrichment::enrich(app, asset, &r.structured_md).await;
+                let resolved = crate::kc::enrichment::resolve_outcome(r, kc_outcome, |meta| {
+                    crate::kc::frontmatter::build_kc_frontmatter(asset, r, meta)
+                });
+                kc_persist_resolved(app, asset, &resolved);
+                materialize_md(
+                    app,
+                    asset,
+                    &resolved.final_md,
+                    r.quality_level,
+                    &resolved.extractor_type,
+                );
+                // ===== task_012 注入结束 ========================================
+            }
         }
     }
 }

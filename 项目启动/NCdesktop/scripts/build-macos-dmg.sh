@@ -82,7 +82,9 @@ TAURI_CONF="${ROOT_DIR}/src-tauri/tauri.conf.json"
 SELFTEST="${SELFTEST:-0}"
 
 # Size gate threshold (KB). 300 MB == 300 * 1024 KB == 307_200 KB.
-SIZE_LIMIT_KB="${SIZE_LIMIT_KB:-307200}"
+# 2026-05-31：用户拍板"放开 300M 限制"（DMG 主要本机用 + torch 走 bundle 外 kc_extras，
+# 不进包）。默认门放宽到 512000KB(500M)；仍可用 SIZE_LIMIT_KB 环境变量覆盖。
+SIZE_LIMIT_KB="${SIZE_LIMIT_KB:-512000}"
 
 # ── Trap for failed-step diagnosis + mount cleanup (AC-4) ───────────────────
 CURRENT_STEP="<init>"
