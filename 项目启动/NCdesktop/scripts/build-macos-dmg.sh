@@ -232,8 +232,12 @@ chmod +x "${RESOURCES_DIR}/ffmpeg"
 # 顺序：必须在 sign-bundle.sh（step 5）之前，让 KC venv 一并进入反序签名覆盖。
 step "step 4c/10 inject KC runtime + optimize kc-venv"
 if [[ -n "${KC_REPO_PATH:-}" ]] && [[ -d "${KC_REPO_PATH}/compiler" ]] && [[ -f "${KC_REPO_PATH}/run_api.py" ]]; then
+  # SIGBUS 修复（2026-05-31）：不再传 python3.12（pyenv）作第 3 参；省略后
+  # prepare-embedded-kc-runtime.sh 默认用 bundle 内自包含 pbs python
+  # (src-tauri/resources/python/bin/python3.12) 建 KC venv，使解释器/stdlib/.so
+  # 全在签名 bundle 内，消除代码签名分页校验 SIGBUS。
   bash "${ROOT_DIR}/scripts/prepare-embedded-kc-runtime.sh" \
-    "${APP_BUNDLE_PATH}" "${KC_REPO_PATH}" python3.12
+    "${APP_BUNDLE_PATH}" "${KC_REPO_PATH}"
   bash "${ROOT_DIR}/scripts/optimize-kc-venv.sh" \
     --strip-bin "${RESOURCES_DIR}/kc/venv"
 

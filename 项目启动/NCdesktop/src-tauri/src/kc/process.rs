@@ -409,6 +409,18 @@ impl KcProcessManager {
                 cmd.env("OPENAI_API_KEY", k);
             }
 
+            // SIGBUS 修复（2026-05-31）：嵌入 pbs python 启动 KC 时，第三方依赖在
+            // kc/venv/lib/python3.12/site-packages（bundle 内、已签名），必须显式注入
+            // PYTHONPATH（放最前，优先于 markitdown 共享 python 的 site-packages，避免
+            // 版本撞车）。dev 期该目录不存在 → python 自动忽略，无副作用。
+            if let Some(kc_sp) = kc_site_packages_pythonpath(&app) {
+                let pp = match std::env::var("PYTHONPATH") {
+                    Ok(existing) if !existing.is_empty() => format!("{kc_sp}:{existing}"),
+                    _ => kc_sp,
+                };
+                cmd.env("PYTHONPATH", pp);
+            }
+
             let mut child = match cmd.spawn() {
                 Ok(c) => c,
                 Err(e) => {
@@ -837,38 +849,64 @@ impl Drop for KcProcessManager {
 
 /// 探测 KC python 解释器路径（参考 scheduler.rs:798 `detect_embedded_markitdown_python`）。
 ///
-/// 优先级（ADR-010）：
-/// 1. `.app/Contents/Resources/kc/venv/bin/python`（DMG 打包后正式路径）
-/// 2. `.app/Contents/Resources/kc/venv/bin/python3`（python 软链不一致时的兜底）
-/// 3. **仅 dev 模式（`debug_assertions`）**：`KnowledgeCompiler/.venv/bin/python`
-///    （从 cwd 向上找 KnowledgeCompiler 工作区，让本机开发无需打 DMG 也能起 KC）
-/// 4. 兜底：复用 markitdown-venv（仅 dev 期 + KC 未独立打包时；ADR-010 要求最终独立 venv）
+/// **SIGBUS 根因修复（2026-05-31）**：历史上这里返回 `kc/venv/bin/python`。该 venv 由
+/// `prepare-embedded-kc-runtime.sh` 用 **构建机 PATH 上的 python3.12（即 pyenv）** 创建，
+/// 其 `bin/python` 软链指向 `~/.pyenv/versions/3.12.0/bin/python3.12`，`base_prefix` 与
+/// 全部 stdlib lib-dynload（`pyexpat` / `_ctypes` / …）都在 **bundle 之外**。打包成签名+
+/// hardened-runtime 的 `.app` 后，macOS 对外部 `.so` 做代码签名分页校验，命中即
+/// **SIGBUS / KERN_MEMORY_ERROR**（终端裸跑 pyenv python 无 cs 强制 → 不复现；只在 .app
+/// 内复现，且两次崩溃栈偏移一致 = 确定性签名校验失败）。markitdown 不崩是因为它用
+/// bundle 内自包含的 `Resources/python`（pbs，pyexpat/_ctypes 静态进 libpython）。
 ///
-/// **task_009 / AC-3**：原 fn 私有；改 `pub` 以便 lib.rs 在 setup 前可调用做"打包预检"。
-/// dev fallback 用 `#[cfg(debug_assertions)]` 保护——release binary 永远不会从外部仓库拉 venv。
+/// 修复：打包态改用 **bundle 内自包含的 python-build-standalone**
+/// （`Resources/python/bin/python3.12`，relocatable，所有扩展在 bundle 内、随 .app 一起签名）。
+/// KC 的第三方依赖仍在 `kc/venv/lib/python3.12/site-packages`（bundle 内、已签名），
+/// 在 `start()` 里通过 `PYTHONPATH` 注入（pbs 3.12.7 与 pyenv 3.12.0 同 minor，ABI 兼容；
+/// 已实测 numpy/scipy/faiss/hdbscan/fastapi/pydantic 等全部 import + native 调用通过）。
+///
+/// 优先级：
+/// 1. **仅 dev 模式（`debug_assertions`）**：`KnowledgeCompiler/.venv/bin/python`
+///    （仓库 venv 自带 KC deps + 源码，本机开发无需打 DMG；release 严禁）
+/// 2. 打包态：`Resources/python/bin/python3.12`（自包含 pbs，本修复核心）
+/// 3. 兜底：`Resources/python/bin/python3` / `python`，再退到 markitdown 共享 python
+///
+/// **task_009 / AC-3**：`pub` 以便 lib.rs 在 setup 前调用做"打包预检"。
 pub fn detect_embedded_kc_python(app: &AppHandle) -> Option<String> {
     let resource_dir = app.path().resource_dir().ok()?;
-    let mut candidates: Vec<PathBuf> = vec![
-        resource_dir.join("kc/venv/bin/python"),
-        resource_dir.join("kc/venv/bin/python3"),
-    ];
 
-    // dev fallback：仅 debug 编译时，向上找 KnowledgeCompiler/.venv（release 严禁）。
+    // dev fallback 最高优先：debug 编译时用仓库 .venv（自带 deps + 源码）。release 不编译此分支。
     #[cfg(debug_assertions)]
     {
         if let Some(p) = find_dev_kc_venv_python() {
-            candidates.push(p);
+            return Some(p.to_string_lossy().to_string());
         }
     }
 
-    // 兜底：markitdown-venv（仅 dev / 过渡期）。
-    candidates.push(resource_dir.join("markitdown-venv/bin/python"));
-    candidates.push(resource_dir.join("markitdown-venv/bin/python3"));
+    // 打包态：自包含 pbs python（修复 SIGBUS）。绝不再用 kc/venv/bin/python（指向 pyenv）。
+    let candidates: Vec<PathBuf> = vec![
+        resource_dir.join("python/bin/python3.12"),
+        resource_dir.join("python/bin/python3"),
+        resource_dir.join("python/bin/python"),
+        // 过渡兜底：极旧 bundle 无 Resources/python 时，复用 markitdown 共享 python（同为 pbs）。
+        resource_dir.join("markitdown-venv/bin/python"),
+        resource_dir.join("markitdown-venv/bin/python3"),
+    ];
 
     candidates
         .into_iter()
         .find(|p| p.is_file())
         .map(|p| p.to_string_lossy().to_string())
+}
+
+/// KC 第三方依赖 site-packages 路径（`kc/venv/lib/python3.12/site-packages`）。
+///
+/// 用嵌入 python 启动 KC 时，必须把这里注入 `PYTHONPATH`，否则 fastapi/uvicorn/pydantic
+/// 等依赖找不到。dev 期该路径通常不存在（仓库 .venv 自带依赖）→ python 自动忽略不存在的
+/// `PYTHONPATH` 条目，无副作用。返回字符串供 `Command::env` 使用。
+fn kc_site_packages_pythonpath(app: &AppHandle) -> Option<String> {
+    let resource_dir = app.path().resource_dir().ok()?;
+    let sp = resource_dir.join("kc/venv/lib/python3.12/site-packages");
+    Some(sp.to_string_lossy().to_string())
 }
 
 /// dev 模式从 cwd 向上找 `KnowledgeCompiler/.venv/bin/python`。

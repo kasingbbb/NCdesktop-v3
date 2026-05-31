@@ -86,7 +86,27 @@ fi
 
 APP_PATH="${POSITIONAL[0]}"
 KC_REPO_PATH="${POSITIONAL[1]}"
-PYTHON_BIN="${POSITIONAL[2]:-python3.12}"
+
+# ---- PYTHON_BIN 选择（SIGBUS 根因修复，2026-05-31） ------------------------
+# 历史 bug：默认 `python3.12` 取构建机 PATH 上的 pyenv。`python -m venv` 创建的 venv
+# 其 `bin/python` 软链 + base_prefix + 全部 stdlib lib-dynload(.so) 都落在 pyenv
+# （bundle 之外）。打包成签名 .app 后，macOS 对 bundle 外 .so 做代码签名分页校验，
+# 命中即 SIGBUS（详见 src-tauri/src/kc/process.rs detect_embedded_kc_python 注释）。
+#
+# 修复：用 bundle 内自包含的 python-build-standalone（task_001 prepare-embedded-python.sh
+# 已就位 src-tauri/resources/python/bin/python3.12）创建 venv，使其 site-packages 的
+# native .so 直接编译/链接到 pbs 3.12.x（与运行时解释器一致），且整棵树随 .app 签名。
+# 运行时由 process.rs 用 Resources/python 启动 + PYTHONPATH 注入本 venv 的 site-packages。
+EMBEDDED_PY="${ROOT_DIR}/src-tauri/resources/python/bin/python3.12"
+if [[ -n "${POSITIONAL[2]:-}" ]]; then
+  PYTHON_BIN="${POSITIONAL[2]}"            # 显式指定优先（CI / 特殊场景）
+elif [[ -x "${EMBEDDED_PY}" ]]; then
+  PYTHON_BIN="${EMBEDDED_PY}"              # 默认：bundle 内自包含 pbs python
+else
+  echo "[prepare-kc-runtime] WARN: 嵌入 python 不存在(${EMBEDDED_PY})，回退 PATH python3.12" >&2
+  echo "[prepare-kc-runtime] WARN: 请先跑 scripts/prepare-embedded-python.sh，否则 KC venv 不自包含" >&2
+  PYTHON_BIN="python3.12"
+fi
 
 # ---- 前置检查 --------------------------------------------------------------
 log() { echo "[prepare-kc-runtime] $*"; }
