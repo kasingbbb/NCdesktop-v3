@@ -281,6 +281,8 @@ pub fn run() {
             commands::sync::mark_card_imported,
             commands::audio::get_audio_metadata,
             commands::audio::get_waveform_data,
+            // 视频→音频提取（导入 mp4 自动抽音频；亦供前端手动调用）
+            commands::video_audio::extract_audio_from_video,
             // W2: 悬浮窗
             commands::dropzone::create_dropzone_window,
             commands::dropzone::close_dropzone_window,
@@ -361,8 +363,6 @@ pub fn run() {
             commands::kc::get_kc_health,
             commands::kc::restart_kc_process,
             commands::kc::set_kc_settings,
-            // 视频→音频：从视频文件提取音轨（ffmpeg 流拷贝 / AAC 降级）。
-            commands::video_audio::extract_audio_from_video,
             #[cfg(debug_assertions)]
             source_scan::source_scan_get_missing,
         ])

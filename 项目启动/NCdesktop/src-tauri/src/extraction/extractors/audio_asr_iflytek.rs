@@ -29,17 +29,19 @@ const QUERY_PATH: &str = "/v2/getResult";
 
 // ── 轮询参数 ─────────────────────────────────────────────────────────────
 const POLL_INTERVAL_SECS: u64 = 10;
-const POLL_MAX_RETRIES: u32 = 180; // 180 × 10s = 30 分钟
+const POLL_MAX_RETRIES: u32 = 60; // 60 × 10s = 10 分钟（原 30 分钟过长；真实失败由 status=-1 即时返回）
 
-/// language 默认值。历史 task_014 Fix-A3 写死为 "cn"，但实测部分账号 SKU 返回
-/// `code=100020 language[cn] does not support`，需要回退到其他候选值。
-/// 通过 `ExtractOptions.iflytek_language` 可由 setting `iflytekLanguage` 显式覆盖。
-const DEFAULT_IFLYTEK_LANGUAGE: &str = "cn";
+/// language 默认值。
+/// 真机实测（2026-05-31，本账号 SKU）：`cn` / `mandarin` / `cn_lay` 均被服务端以
+/// `code=100020 language does not support` 拒收，**只有 `autodialect` 能提交**。
+/// 因此默认直接用 `autodialect`，避免每次都先吃 3 次无效 100020 回退。
+/// 通过 `ExtractOptions.iflytek_language`（setting `iflytekLanguage`）可显式覆盖。
+const DEFAULT_IFLYTEK_LANGUAGE: &str = "autodialect";
 
 /// 当账号当前 language 值被讯飞拒收（code=100020）时，按顺序自动重试的候选值。
-/// 顺序覆盖：通用普通话 → 中文混合 → 自动方言 → 英文 → 空（让服务端用默认值）。
+/// autodialect 放首位（本账号唯一可用）；其余为其他账号 SKU 兜底。
 /// 列表里的值会跳过等于"当前已尝试值"的项，避免无效重试。
-const IFLYTEK_LANGUAGE_FALLBACKS: &[&str] = &["cn", "mandarin", "cn_lay", "autodialect", "en", ""];
+const IFLYTEK_LANGUAGE_FALLBACKS: &[&str] = &["autodialect", "cn", "mandarin", "cn_lay", "en", ""];
 
 /// 业务错误码：language 不支持。`fn submit_task` 命中后会换下一个候选语言重试。
 const IFLYTEK_CODE_LANGUAGE_UNSUPPORTED: &str = "100020";
@@ -481,9 +483,10 @@ async fn poll_result(order_id: &str) -> Result<String, ExtractionError> {
 
         match content.order_info.status {
             -1 => {
+                let ft = content.order_info.fail_type;
                 return Err(ExtractionError::OcrError(format!(
-                    "讯飞转录任务失败（failType={}）",
-                    content.order_info.fail_type
+                    "{}（failType={ft}）",
+                    fail_type_message(ft)
                 )));
             }
             4 => {
@@ -499,6 +502,18 @@ async fn poll_result(order_id: &str) -> Result<String, ExtractionError> {
     Err(ExtractionError::OcrError(format!(
         "讯飞转录超时（orderId={order_id}）"
     )))
+}
+
+/// 讯飞转写 `orderInfo.failType` → 面向用户的可读原因。
+///
+/// 真机实测（2026-05-31）：对无人声 / 过短 / 静音的音频，转写以 `failType=6` 失败。
+/// 这是最常见的"看似卡住其实已失败"来源，单独给出清晰文案，避免用户误以为一直在转。
+fn fail_type_message(fail_type: i32) -> String {
+    match fail_type {
+        6 => "未识别到有效语音内容（音频可能无人声 / 过短 / 静音，请确认录音含清晰说话声）"
+            .to_string(),
+        _ => format!("讯飞转录任务失败（failType={fail_type}）"),
+    }
 }
 
 /// 解析 orderResult JSON 字符串，提取纯文本
@@ -682,12 +697,13 @@ mod tests {
     }
 
     /// 候选语言回退：当前值是表中某项 → 返回表中下一项
+    /// （表序：autodialect → cn → mandarin → cn_lay → en → ""）
     #[test]
     fn next_language_candidate_returns_next_in_table() {
+        assert_eq!(next_language_candidate("autodialect"), Some("cn"));
         assert_eq!(next_language_candidate("cn"), Some("mandarin"));
         assert_eq!(next_language_candidate("mandarin"), Some("cn_lay"));
-        assert_eq!(next_language_candidate("cn_lay"), Some("autodialect"));
-        assert_eq!(next_language_candidate("autodialect"), Some("en"));
+        assert_eq!(next_language_candidate("cn_lay"), Some("en"));
         assert_eq!(next_language_candidate("en"), Some(""));
     }
 
@@ -698,28 +714,38 @@ mod tests {
         assert_eq!(next_language_candidate(""), None);
     }
 
-    /// 用户传了表外的自定义值（首次尝试）→ 从表头第一个不同的值开始
+    /// 用户传了表外的自定义值（首次尝试）→ 从表头第一个不同的值开始（现表头 = autodialect）
     #[test]
     fn next_language_candidate_unknown_value_starts_from_head() {
         let next = next_language_candidate("zh_custom").unwrap();
-        assert_eq!(next, "cn");
+        assert_eq!(next, "autodialect");
     }
 
-    /// task_014 Fix-A3 AC-5：默认 language = "cn"（修复 code=100020 autodialect 不支持）
+    /// 默认 language = "autodialect"（2026-05-31 真机：本账号仅 autodialect 可提交）
     #[test]
-    fn resolve_language_defaults_to_cn() {
+    fn resolve_language_defaults_to_autodialect() {
         let opts = ExtractOptions::default();
-        assert_eq!(resolve_language(&opts), "cn");
+        assert_eq!(resolve_language(&opts), "autodialect");
     }
 
-    /// task_014 Fix-A3：空字符串视为 None → 默认 "cn"
+    /// 空字符串视为 None → 默认 "autodialect"
     #[test]
-    fn resolve_language_empty_string_falls_back_to_cn() {
+    fn resolve_language_empty_string_falls_back_to_default() {
         let opts = ExtractOptions {
             iflytek_language: Some("   ".to_string()),
             ..ExtractOptions::default()
         };
-        assert_eq!(resolve_language(&opts), "cn");
+        assert_eq!(resolve_language(&opts), "autodialect");
+    }
+
+    /// failType=6 → 清晰的"无有效语音"文案（不再是裸 failType 数字）
+    #[test]
+    fn fail_type_6_has_clear_no_speech_message() {
+        let msg = fail_type_message(6);
+        assert!(msg.contains("未识别到有效语音"), "实际: {msg}");
+        assert!(!msg.starts_with("讯飞转录任务失败（failType=6"));
+        // 其它 failType 仍走通用文案
+        assert!(fail_type_message(2).contains("failType=2"));
     }
 
     /// task_014 Fix-A3：setting 覆盖时取覆盖值

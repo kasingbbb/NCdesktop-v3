@@ -990,6 +990,12 @@ export interface KcSettingsPayload {
   zhipuKeyValue?: string;
   openaiKeyAction: "keep" | "clear" | "set";
   openaiKeyValue?: string;
+  // base_url / model 覆盖（Unit 3）：可选，留空走 KC 内置默认。
+  // 字节方舟等 OpenAI 兼容服务需配 openaiBaseUrl（如 https://ark.cn-beijing.volces.com/api/v3）。
+  openaiBaseUrl?: string;
+  openaiModel?: string;
+  zhipuBaseUrl?: string;
+  zhipuModel?: string;
 }
 
 /** 查询 KC 当前进程状态（成功路径永不抛错；HTTP 探测降级走 reason 字段）。 */
@@ -1023,6 +1029,10 @@ export async function setKcSettings(settings: KcSettingsPayload): Promise<void> 
       zhipuKeyValue: settings.zhipuKeyValue ?? "",
       openaiKeyAction: settings.openaiKeyAction,
       openaiKeyValue: settings.openaiKeyValue ?? "",
+      openaiBaseUrl: settings.openaiBaseUrl ?? "",
+      openaiModel: settings.openaiModel ?? "",
+      zhipuBaseUrl: settings.zhipuBaseUrl ?? "",
+      zhipuModel: settings.zhipuModel ?? "",
     },
   });
 }

@@ -433,8 +433,13 @@ pub fn resolve_outcome(
     match outcome {
         KcEnrichmentOutcome::Success { enhanced_md, meta } => {
             let fm = frontmatter_writer(&meta);
+            // KC `/api/v1/ingest` 返回的 enhanced_md 自带一段 KC frontmatter（doc_id /
+            // generated_at / total_paragraphs ...）。NC 自己的 frontmatter（fm）已经包含
+            // kc_doc_id / kc_version 等等价字段，故先剥掉 enhanced_md 头部那段 KC 自带块，
+            // 避免最终产物出现 2~3 层 `---...---` 叠加（前端 parseFrontmatter 只解析第 1 段）。
+            let body = strip_leading_frontmatter(&enhanced_md);
             ResolvedEnrichment {
-                final_md: join_frontmatter_body(&fm, &enhanced_md),
+                final_md: join_frontmatter_body(&fm, body),
                 extractor_type: "markitdown+kc".to_string(),
                 kc_enriched: "true".to_string(),
                 kc_meta_for_db: Some(meta),
@@ -443,8 +448,10 @@ pub fn resolve_outcome(
         }
         KcEnrichmentOutcome::PartialLlmUnavailable { rule_only_md, meta } => {
             let fm = frontmatter_writer(&meta);
+            // 与 Success 同理：rule_only_md 也可能自带 KC frontmatter，需先剥离再拼接。
+            let body = strip_leading_frontmatter(&rule_only_md);
             ResolvedEnrichment {
-                final_md: join_frontmatter_body(&fm, &rule_only_md),
+                final_md: join_frontmatter_body(&fm, body),
                 extractor_type: "markitdown+kc:partial".to_string(),
                 kc_enriched: "partial".to_string(),
                 kc_meta_for_db: Some(meta),
@@ -474,6 +481,78 @@ pub fn resolve_outcome(
 /// - 单测 `failure_code_strings_match_failure_code_enum` 守护字面值不漂移。
 fn fallback_reason_to_failure_code(reason: &KcFallbackReason) -> Option<&'static str> {
     reason.to_failure_code().map(|fc| fc.as_str())
+}
+
+/// 剥离 markdown 文本开头自带的一段 YAML frontmatter 块（`---\n...\n---`），返回剩余正文。
+///
+/// ## 动机
+///
+/// KC `/api/v1/ingest` 返回的 `enhanced_markdown`（以及 partial 路径的 `rule_only_md`）
+/// 头部**自带**一段 KC 侧 frontmatter（形如 `---\ndoc_id: ...\ngenerated_at: ...\n
+/// total_paragraphs: ...\n---`）。NC 在 `resolve_outcome` 里会前置自己的 frontmatter
+/// （由 `build_kc_frontmatter` 生成，已含 kc_doc_id / kc_version 等等价字段）。若不剥离，
+/// 最终产物 `.md` 头部会叠加 2~3 个 `---...---` 块，前端 `parseFrontmatter` 只解析第 1 段，
+/// 其余被当正文渲染，产物观感很乱。KC 自带块的信息全部能被 NC frontmatter 覆盖，**直接丢弃**
+/// 即可，无需合并。
+///
+/// ## 行为契约（纯函数，无 IO）
+///
+/// 仅当 `md` **以 `---\n` 开头**（即第一行恰为 `---`）时才尝试剥离：
+/// - 找到下一个**独占一行**的 `---`（闭合标记，即 `\n---\n` 或文末 `\n---`）；
+/// - 把从开头到闭合标记（含）的整段 frontmatter 连同其后紧邻的空行一并跳过，返回剩余正文切片；
+/// - 若找不到闭合标记（无闭合 `---`）→ 视为不是合法 frontmatter，**原样返回**（不破坏内容）；
+/// - 若 `md` 不以 `---\n` 开头（含开头是 `--- foo`、`----`、空串等）→ **原样返回**。
+///
+/// 返回借用切片（`&str`）避免无谓分配；调用方 `join_frontmatter_body` 再做拼接。
+fn strip_leading_frontmatter(md: &str) -> &str {
+    // 必须以独占一行的 `---` 开头（即前 4 字节恰为 "---\n"）。
+    // 注意：`"---"`（无换行，整串就是三横线）/ `"----\n"` / `"--- x\n"` 都不算合法 frontmatter 起始。
+    // 开标记：`---` 后接 `\n` 或 `\r\n`（容忍 CRLF 行尾）。
+    let after_open = match md
+        .strip_prefix("---\n")
+        .or_else(|| md.strip_prefix("---\r\n"))
+    {
+        Some(rest) => rest,
+        None => return md,
+    };
+
+    // 退化：空 frontmatter 块——闭合 `---` 紧跟在开标记之后（`after_open` 直接以 `---\n` 开头，
+    // 或整段就是 `---`）。此时上面的 `\n---` 锚点扫不到（缺少前导 `\n`），需单独命中。
+    if after_open == "---" {
+        return "";
+    }
+    if let Some(body) = after_open
+        .strip_prefix("---\n")
+        .or_else(|| after_open.strip_prefix("---\r\n"))
+    {
+        return body.trim_start_matches(['\n', '\r']);
+    }
+
+    // 在剩余内容里逐行找闭合 `---`。闭合标记必须独占一行：
+    // 要么是某行的开头紧跟 `---\n`（行尾还有内容），要么是文末的 `---`（无尾随换行）。
+    // 用 "\n---" 作为锚点，再校验其后是 `\n`（行内闭合）或字符串结束（文末闭合）。
+    let mut search_from = 0usize;
+    while let Some(rel) = after_open[search_from..].find("\n---") {
+        let close_at = search_from + rel; // after_open 中 `\n---` 里那个 `\n` 的下标
+        let after_dashes = close_at + 4; // 跳过 `\n---`，指向闭合 `---` 之后
+        let tail = &after_open[after_dashes..];
+        // 闭合行可带尾随水平空白（` ` / `\t`，YAML 允许），其后须是 `\n` / `\r\n` / 文末。
+        let tail_after_ws = tail.trim_start_matches([' ', '\t']);
+        if tail_after_ws.is_empty()
+            || tail_after_ws.starts_with('\n')
+            || tail_after_ws.starts_with("\r\n")
+        {
+            // 命中闭合标记。跳过其后紧邻的换行 / 空行（含 CRLF），定位正文起点。
+            let body = tail_after_ws.trim_start_matches(['\n', '\r']);
+            return body;
+        }
+        // `\n---` 后面紧跟的不是换行也非文末（如 `\n----` / `\n--- foo`）——不是合法闭合，
+        // 继续往后找（从这个 `\n` 之后 1 字节起，避免死循环）。
+        search_from = close_at + 1;
+    }
+
+    // 没有闭合 `---`：不是合法 frontmatter，原样返回不破坏内容。
+    md
 }
 
 /// 拼接 frontmatter + 正文（中间空一行）。
@@ -1027,6 +1106,140 @@ mod tests {
             "应归一化末尾换行，实际: {joined:?}"
         );
         assert!(joined.contains("---\n\n# body"));
+    }
+
+    // =================================================================
+    // strip_leading_frontmatter：剥离 enhanced_md 自带的 KC frontmatter
+    // =================================================================
+
+    #[test]
+    fn strip_leading_frontmatter_removes_kc_block() {
+        // (a) enhanced_md 带 KC frontmatter → 剥离后只剩正文
+        let md = "---\ndoc_id: doc-fb11bc7b\ngenerated_at: 2026-05-27T07:59:50Z\ntotal_paragraphs: 1\n---\n\n# 正文\n\n段落内容";
+        let body = strip_leading_frontmatter(md);
+        assert_eq!(
+            body, "# 正文\n\n段落内容",
+            "应剥掉 KC frontmatter 块 + 其后空行，只留正文，实际: {body:?}"
+        );
+        // 关键：剥离后正文里不再含 KC 字段
+        assert!(!body.contains("doc_id"), "剥离后不应残留 doc_id，实际: {body:?}");
+        assert!(!body.contains("total_paragraphs"));
+    }
+
+    #[test]
+    fn strip_leading_frontmatter_handles_crlf_line_endings() {
+        // 鲁棒性（code-review 补）：CRLF 行尾的 KC frontmatter 也要剥离。
+        let md = "---\r\ndoc_id: doc-x\r\ngenerated_at: 2026-05-27T07:59:50Z\r\n---\r\n\r\n# 正文\r\n段落";
+        let body = strip_leading_frontmatter(md);
+        assert!(
+            !body.contains("doc_id") && body.contains("# 正文"),
+            "CRLF frontmatter 应被剥离，实际: {body:?}"
+        );
+    }
+
+    #[test]
+    fn strip_leading_frontmatter_handles_trailing_whitespace_close() {
+        // 鲁棒性（code-review 补）：闭合行带尾随空白（`---  \n`）也算合法闭合。
+        let md = "---\ndoc_id: doc-x\n---  \n# 正文\n段落";
+        let body = strip_leading_frontmatter(md);
+        assert!(
+            !body.contains("doc_id") && body.contains("# 正文"),
+            "带尾随空白的闭合行应被识别，实际: {body:?}"
+        );
+    }
+
+    #[test]
+    fn strip_leading_frontmatter_no_frontmatter_returns_as_is() {
+        // (b) enhanced_md 不带 frontmatter → 原样
+        let md = "# 增强后的文档\n\n#AI #ML\n\n## 摘要\n\n这是 AI 生成的摘要。\n";
+        assert_eq!(
+            strip_leading_frontmatter(md),
+            md,
+            "无 frontmatter 应原样返回"
+        );
+    }
+
+    #[test]
+    fn strip_leading_frontmatter_unclosed_returns_as_is() {
+        // (c) 边界：以 ---\n 开头但无闭合 ---，原样返回不破坏内容
+        let md = "---\ndoc_id: doc-x\n# 这其实是正文但没闭合\n更多内容";
+        assert_eq!(
+            strip_leading_frontmatter(md),
+            md,
+            "无闭合 --- 应原样返回，不丢内容"
+        );
+    }
+
+    #[test]
+    fn strip_leading_frontmatter_does_not_match_horizontal_rule() {
+        // 开头是 markdown 水平分隔线 `---` 但不是独占首行的 frontmatter 起始
+        // （如 `----` 或 `--- foo`）→ 不应被误剥。
+        let md1 = "----\n正文";
+        assert_eq!(strip_leading_frontmatter(md1), md1, "`----` 不是 frontmatter 起始");
+        let md2 = "--- 这是普通文本\n正文";
+        assert_eq!(strip_leading_frontmatter(md2), md2, "`--- foo` 不是 frontmatter 起始");
+        // 纯三横线无换行（整串就是 `---`）也不该 panic / 误剥
+        assert_eq!(strip_leading_frontmatter("---"), "---");
+    }
+
+    #[test]
+    fn strip_leading_frontmatter_close_at_eof_no_trailing_newline() {
+        // 闭合 --- 恰在文末（无尾随换行）且其后无正文 → 返回空串
+        let md = "---\ndoc_id: doc-x\n---";
+        assert_eq!(
+            strip_leading_frontmatter(md),
+            "",
+            "frontmatter 后无正文应返回空串，实际: {:?}",
+            strip_leading_frontmatter(md)
+        );
+    }
+
+    #[test]
+    fn strip_leading_frontmatter_empty_frontmatter_block() {
+        // 退化：空 frontmatter 块（`---\n---\n` 紧接正文）
+        let md = "---\n---\n# 正文";
+        assert_eq!(
+            strip_leading_frontmatter(md),
+            "# 正文",
+            "空 frontmatter 块也应正确剥离，实际: {:?}",
+            strip_leading_frontmatter(md)
+        );
+    }
+
+    #[test]
+    fn resolve_outcome_success_strips_enhanced_md_frontmatter() {
+        // 端到端守护：Success 路径下，enhanced_md 自带 KC frontmatter 时，
+        // final_md 头部只应有 1 段 frontmatter（NC 自己的），不叠加 KC 自带块。
+        let raw = make_raw();
+        let meta = make_meta();
+        let enhanced_with_kc_fm =
+            "---\ndoc_id: doc-kc-self\ngenerated_at: 2026-05-27T00:00:00Z\ntotal_paragraphs: 3\n---\n\n# 真正的正文";
+        let outcome = KcEnrichmentOutcome::Success {
+            enhanced_md: enhanced_with_kc_fm.to_string(),
+            meta,
+        };
+
+        let resolved = resolve_outcome(&raw, outcome, stub_writer);
+
+        // 正文保留
+        assert!(
+            resolved.final_md.contains("# 真正的正文"),
+            "final_md 应含正文，实际: {}",
+            resolved.final_md
+        );
+        // KC 自带块字段被剥离，不残留
+        assert!(
+            !resolved.final_md.contains("total_paragraphs"),
+            "KC 自带 frontmatter 应被剥离，实际: {}",
+            resolved.final_md
+        );
+        // 全文只有 1 个 frontmatter 分隔三元组：`---` 出现次数应为 2（NC 块的开 + 闭）
+        let dash_blocks = resolved.final_md.matches("---").count();
+        assert_eq!(
+            dash_blocks, 2,
+            "final_md 应只剩 NC 自己的 1 段 frontmatter（2 个 --- 标记），实际 {dash_blocks} 个，全文: {}",
+            resolved.final_md
+        );
     }
 
     // =================================================================

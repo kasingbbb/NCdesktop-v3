@@ -351,8 +351,11 @@ pub fn get_sync_status(arca_path: String) -> Result<Vec<state::SyncedSessionReco
 /// 返回 `None` 表示目标卷未挂载；`Some(scan)` 时 `newFiles` 可能为空（卡在但无新图）。
 /// 前端在窗口挂载时主动调一次，兜底「app 启动时卡已插入」的场景（不依赖监听事件时序）。
 #[tauri::command]
-pub fn scan_usb_card_now() -> Result<Option<usb_import::CardScan>, String> {
-    Ok(usb_import::scan_target_card())
+pub async fn scan_usb_card_now() -> Result<Option<usb_import::CardScan>, String> {
+    // 扫描含逐文件 hash（I/O 密集）；放 blocking 线程池，避免阻塞导致 UI 卡顿。
+    tauri::async_runtime::spawn_blocking(usb_import::scan_target_card)
+        .await
+        .map_err(|e| format!("USB 扫描任务失败: {e}"))
 }
 
 /// 把一批文件内容 hash 标记为「已导入」，落入去重集合。

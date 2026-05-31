@@ -8,7 +8,7 @@
  * - parseFrontmatter_extracts_nc_and_kc_fields
  * - parseFrontmatter_yaml_load_safety
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { parseFrontmatter } from "../parseFrontmatter";
 
 describe("parseFrontmatter", () => {
@@ -157,5 +157,117 @@ describe("parseFrontmatter", () => {
     expect(frontmatter?.derivativeVersion).toBeUndefined();
     // aiTags 含数字混入 → 整数组丢弃
     expect(frontmatter?.aiTags).toBeUndefined();
+  });
+
+  describe("多块 frontmatter 兜底（剥离残留块）", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("双块输入 → 取第一块 frontmatter + 干净 body（不含残留 --- 块）", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const md = [
+        "---",
+        "ai_summary: 第一块",
+        "ai_tags:",
+        "  - foo",
+        "---",
+        "---",
+        "ai_summary: 第二块应被丢弃",
+        "---",
+        "真正的正文",
+        "第二行",
+      ].join("\n");
+
+      const result = parseFrontmatter(md);
+      // 取首块
+      expect(result.frontmatter).not.toBeNull();
+      expect(result.frontmatter?.aiSummary).toBe("第一块");
+      expect(result.frontmatter?.aiTags).toEqual(["foo"]);
+      // body 干净，不含残留 frontmatter 块
+      expect(result.body).toBe("真正的正文\n第二行");
+      expect(result.body).not.toContain("---");
+      expect(result.body).not.toContain("第二块");
+      expect(result.parseError).toBeUndefined();
+      // 残留块触发了 warn
+      expect(warn).toHaveBeenCalled();
+    });
+
+    it("三块输入 → 取第一块 frontmatter + 剥离后两块", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const md = [
+        "---",
+        "ai_summary: 头块",
+        "---",
+        "---",
+        "ai_summary: 中块",
+        "---",
+        "---",
+        "ai_summary: 尾块",
+        "---",
+        "最终正文",
+      ].join("\n");
+
+      const result = parseFrontmatter(md);
+      expect(result.frontmatter?.aiSummary).toBe("头块");
+      expect(result.body).toBe("最终正文");
+      expect(result.body).not.toContain("---");
+      expect(result.parseError).toBeUndefined();
+      expect(warn).toHaveBeenCalled();
+    });
+
+    it("单块输入 → 不退化（无残留剥离，不 warn）", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const md = ["---", "ai_summary: 唯一块", "---", "正文内容", "第二行"].join("\n");
+
+      const result = parseFrontmatter(md);
+      expect(result.frontmatter?.aiSummary).toBe("唯一块");
+      expect(result.body).toBe("正文内容\n第二行");
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it("无 frontmatter → 不退化（原文 body，不 warn）", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const md = "# 普通 markdown\n\n中间有 --- 水平线\n\n---\n\n结尾";
+
+      const result = parseFrontmatter(md);
+      expect(result.frontmatter).toBeNull();
+      expect(result.body).toBe(md);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it("正文中的 --- 水平线不被误剥离（仅头部连续块才剥）", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const md = [
+        "---",
+        "ai_summary: only",
+        "---",
+        "正文开始",
+        "",
+        "---",
+        "",
+        "水平线后的正文",
+      ].join("\n");
+
+      const result = parseFrontmatter(md);
+      expect(result.frontmatter?.aiSummary).toBe("only");
+      // body 内部的 --- 应保留
+      expect(result.body).toContain("水平线后的正文");
+      expect(result.body).toContain("---");
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it("空首块 + 残留块 → null frontmatter 但 body 仍被清理", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const md = ["---", "---", "---", "ai_summary: 残留", "---", "正文"].join("\n");
+
+      const result = parseFrontmatter(md);
+      // 首块为空 → frontmatter null
+      expect(result.frontmatter).toBeNull();
+      // 残留块被剥离
+      expect(result.body).toBe("正文");
+      expect(result.body).not.toContain("---");
+      expect(warn).toHaveBeenCalled();
+    });
   });
 });

@@ -174,6 +174,85 @@ else
   done
 fi
 
+# ---- T6: D4 manifest fail-fast + merge 守护 --------------------------------
+# 提取脚本里第一个 PYEOF heredoc（manifest 写入块），用 env var 驱动直接跑，
+# 不需要真 venv。验证：缺失 manifest → exit≠0；损坏 manifest → exit≠0；
+# 合法 manifest → exit 0 且 markitdown 顶层字段被保留（merge 不 clobber）。
+hdr "T6: D4 manifest fail-fast + merge preserves markitdown fields"
+
+# 用 python 抽出脚本里第一个 <<'PYEOF' ... PYEOF 块到临时文件
+MANIFEST_PY="${TMPDIR}/manifest_block.py"
+if "${PYTHON_FOR_TEST}" - "${TARGET_SCRIPT}" "${MANIFEST_PY}" <<'EXTRACT'; then
+import re, sys
+src = open(sys.argv[1], encoding="utf-8").read()
+m = re.search(r"<<'PYEOF'\n(.*?)\nPYEOF", src, re.DOTALL)
+if not m:
+    sys.exit("could not extract manifest heredoc")
+open(sys.argv[2], "w", encoding="utf-8").write(m.group(1))
+EXTRACT
+  : # extracted ok
+else
+  ng "T6: failed to extract manifest heredoc from script"
+fi
+
+# 公共 env（除 MANIFEST_PATH 外都固定）
+export PREP_KC_PYPROJECT="${TMPDIR}/nonexistent-pyproject.toml"
+export PREP_KC_COMMIT_SHA="deadbeef"
+export PREP_KC_PYTHON_VERSION="Python 3.12.0"
+export PREP_KC_VENV_SIZE_BYTES="12345"
+export PREP_KC_BUILD_TS="2026-05-30T00:00:00Z"
+export PREP_KC_RUNTIME_ID="ncdesktop-kc-runtime"
+
+if [[ -f "${MANIFEST_PY}" ]]; then
+  # T6a: manifest 缺失 → fail-fast exit≠0
+  export PREP_KC_MANIFEST_PATH="${TMPDIR}/no-such-manifest.json"
+  if "${PYTHON_FOR_TEST}" "${MANIFEST_PY}" >/dev/null 2>&1; then
+    ng "T6a: missing manifest should exit non-zero, got 0 (D4 regression)"
+  else
+    ok "T6a: missing manifest fails fast (no phantom manifest created)"
+  fi
+
+  # T6b: 损坏 manifest → fail-fast exit≠0
+  BAD_MANIFEST="${TMPDIR}/corrupt-manifest.json"
+  printf '{ this is not valid json' > "${BAD_MANIFEST}"
+  export PREP_KC_MANIFEST_PATH="${BAD_MANIFEST}"
+  if "${PYTHON_FOR_TEST}" "${MANIFEST_PY}" >/dev/null 2>&1; then
+    ng "T6b: corrupt manifest should exit non-zero, got 0 (D4 regression)"
+  else
+    ok "T6b: corrupt manifest fails fast (does not clobber)"
+  fi
+
+  # T6c: 合法 manifest（带 markitdown 顶层字段）→ exit 0 且字段保留
+  GOOD_MANIFEST="${TMPDIR}/good-manifest.json"
+  printf '{"schema_version":1,"runtime_id":"nc-md","markitdown":{"version":"0.1"},"imports":["x"]}' > "${GOOD_MANIFEST}"
+  export PREP_KC_MANIFEST_PATH="${GOOD_MANIFEST}"
+  if "${PYTHON_FOR_TEST}" "${MANIFEST_PY}" >/dev/null 2>&1; then
+    # 验证 markitdown / runtime_id / imports 仍在，且新增了 kc 字段
+    if "${PYTHON_FOR_TEST}" - "${GOOD_MANIFEST}" <<'CHECK'
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+assert "markitdown" in d, "markitdown top-level field clobbered"
+assert d.get("runtime_id") == "nc-md", "runtime_id clobbered"
+assert d.get("imports") == ["x"], "imports clobbered"
+assert "kc" in d and d["kc"]["runtime_id"] == "ncdesktop-kc-runtime", "kc field missing"
+CHECK
+    then
+      ok "T6c: valid manifest merged — markitdown fields preserved + kc added"
+    else
+      ng "T6c: merge clobbered markitdown top-level fields"
+    fi
+  else
+    ng "T6c: valid manifest merge should exit 0, got non-zero"
+  fi
+else
+  ng "T6: manifest block not extracted; skipping T6a-c"
+fi
+
+# 清理 T6 注入的 env（避免污染后续）
+unset PREP_KC_MANIFEST_PATH PREP_KC_PYPROJECT PREP_KC_COMMIT_SHA \
+      PREP_KC_PYTHON_VERSION PREP_KC_VENV_SIZE_BYTES PREP_KC_BUILD_TS \
+      PREP_KC_RUNTIME_ID
+
 # ---- 汇总 -----------------------------------------------------------------
 echo ""
 echo "════════════════════════════════════════════"

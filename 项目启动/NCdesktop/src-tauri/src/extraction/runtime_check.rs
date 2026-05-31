@@ -178,6 +178,26 @@ pub fn verify_with_paths(
         return Err(FailureCode::ERuntimeMissing);
     }
 
+    // (2.5) python 解释器"整体可用性"探针 —— 修复"epub 误报"张冠李戴。
+    //   背景：venv python 文件存在 ≠ 它能运行。打包 .app / git worktree 场景下，
+    //   嵌入式 python 常因 `dyld: Library not loaded: @executable_path/../lib/libpython3.12.dylib`
+    //   而**根本起不来**。此时下面逐项 import 探测的第一个模块（imports[0] = "ebooklib"）
+    //   必然失败，被 `map_import_failure` 归成 `E_EXTRA_MISSING_EPUB` —— 于是图片 / docx 等
+    //   任何 markitdown 路由文件都被误报成"EPUB 解析组件缺失，无法读取该电子书"。
+    //   修复：先跑一次"裸解释器"探针（`python -c ""`，不 import 任何业务模块）。
+    //   - 解释器自身起不来 → `E_RUNTIME_MISSING`（运行时整体不可用），不让 epub 专属码背锅；
+    //   - 仅当解释器能跑、却缺某个 extra 时，才进入 (3) 把失败归因到具体模块。
+    if let Err(diag) = probe_python_runnable(venv_python) {
+        log::warn!(
+            "[runtime_check] python 解释器自身不可运行（判定运行时整体不可用，非 extra 缺失）: \
+             venv={} runtime_id={} diag={}",
+            venv_python.display(),
+            manifest.runtime_id,
+            diag.trim()
+        );
+        return Err(FailureCode::ERuntimeMissing);
+    }
+
     // (3) 7 imports 逐项探测；任一失败 → E_EXTRA_MISSING_<X>
     for module in &manifest.imports {
         probe_import(venv_python, module).map_err(|stderr| {
@@ -221,13 +241,30 @@ fn load_manifest(path: &Path) -> Result<RuntimeManifest, FailureCode> {
     })
 }
 
+/// "裸解释器"探针：运行 `python -c ""`（不 import 任何业务模块），仅验证解释器能否启动。
+///
+/// 与 `probe_import` 的本质区别：本探针不导入任何扩展模块，因此它的失败只可能源于
+/// **解释器本身无法启动**（典型：嵌入式 python 的 `libpython*.dylib` dyld 加载失败、
+/// 二进制损坏、CPU 架构不匹配）。用于在逐项 import 探测前区分"运行时整体不可用"与
+/// "某个 extra 缺失"，从而避免把前者误报成 `E_EXTRA_MISSING_EPUB`（见 verify_with_paths (2.5)）。
+fn probe_python_runnable(python: &Path) -> Result<(), String> {
+    run_python_probe(python, "")
+}
+
 /// 单次 `python -c "import X"` 探测，10s 硬超时。
 ///
 /// 成功 → `Ok(())`；失败 → `Err(stderr)`（调用方据此 log::warn! + 映射 FailureCode）。
 fn probe_import(python: &Path, module: &str) -> Result<(), String> {
+    run_python_probe(python, &format!("import {module}"))
+}
+
+/// 运行 `python -c "<code>"`，10s 硬超时。成功 → `Ok(())`；失败 → `Err(诊断信息)`。
+///
+/// `probe_import` 与 `probe_python_runnable` 的共享实现。
+fn run_python_probe(python: &Path, code: &str) -> Result<(), String> {
     let mut child = Command::new(python)
         .arg("-c")
-        .arg(format!("import {module}"))
+        .arg(code)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -353,6 +390,43 @@ esac
         perms.set_mode(0o755);
         std::fs::set_permissions(&path, perms).unwrap();
         path
+    }
+
+    /// 构造一个"坏掉的 python":无论传什么参数都立即 exit 1 并打印 dyld 风格 stderr。
+    /// 模拟嵌入式 python 因 `libpython3.12.dylib` 加载失败而根本起不来的场景。
+    #[cfg(unix)]
+    fn make_broken_python(dir: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("broken_python.sh");
+        let script = "#!/bin/sh\n\
+            echo \"dyld: Library not loaded: @executable_path/../lib/libpython3.12.dylib\" 1>&2\n\
+            exit 1\n";
+        write(&path, script);
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&path, perms).unwrap();
+        path
+    }
+
+    // ─── 回归：python 整体起不来（dyld 失败）→ E_RUNTIME_MISSING，不得误报 EPUB ──
+
+    /// 这是本次修复的核心断言：解释器自身无法运行时，**必须**判 `E_RUNTIME_MISSING`，
+    /// 而**不是** `E_EXTRA_MISSING_EPUB`（旧逻辑会因 imports[0]=="ebooklib" 探测先失败而误报）。
+    #[cfg(unix)]
+    #[test]
+    fn broken_interpreter_returns_runtime_missing_not_epub() {
+        let dir = tempdir().unwrap();
+        let manifest = dir.path().join("runtime-manifest.json");
+        write(&manifest, VALID_MANIFEST); // imports[0] == "ebooklib"
+        let broken = make_broken_python(dir.path());
+
+        let r = verify_with_paths(&manifest, &broken);
+        assert_eq!(
+            r,
+            Err(FailureCode::ERuntimeMissing),
+            "解释器整体不可用应判 E_RUNTIME_MISSING，禁止误报为 E_EXTRA_MISSING_EPUB"
+        );
+        assert_ne!(r, Err(FailureCode::EExtraMissingEpub));
     }
 
     // ─── AC-1 / AC-5：7 imports 全 OK ─────────────────────────────────────

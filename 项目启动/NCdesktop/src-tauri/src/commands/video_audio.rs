@@ -1,4 +1,5 @@
 use std::path::Path;
+
 use serde::Serialize;
 
 use crate::extraction::video_audio;
@@ -16,8 +17,11 @@ pub struct ExtractAudioResponse {
 
 /// 从视频文件提取音频，输出到同目录。
 ///
-/// - `video_path`：视频文件绝对路径（支持 mp4 / mov / mkv / avi 等 ffmpeg 支持的格式）
+/// - `video_path`：视频文件绝对路径（支持 mp4 / mov / mkv / webm 等 ffmpeg 支持的格式）
 /// - 返回：`ExtractAudioResponse`，包含输出路径与耗时
+///
+/// 注：导入管线（dropzone::import_files_core）走 `video_audio::extract_audio_to`
+/// 把音频抽到临时目录，不经过本命令；本命令仅供前端按需手动调用。
 #[tauri::command]
 pub fn extract_audio_from_video(video_path: String) -> Result<ExtractAudioResponse, String> {
     let path = Path::new(&video_path);

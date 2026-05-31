@@ -29,7 +29,12 @@ interface UsbImportStore {
   dismiss: () => void;
   /** 确认导入：调 import_drop_paths + markCardImported。 */
   confirmImport: () => Promise<void>;
+  /** 手动重扫目标卷（窗口聚焦/手动触发）。present 幂等去重，不会重复弹窗。 */
+  rescan: () => Promise<void>;
 }
+
+/** 上次主动重扫的时间戳（ms），用于聚焦重扫防抖（模块级，跨组件实例共享）。 */
+let lastRescanAt = 0;
 
 export const useUsbImportStore = create<UsbImportStore>((set, get) => ({
   pending: null,
@@ -51,6 +56,25 @@ export const useUsbImportStore = create<UsbImportStore>((set, get) => ({
 
   dismiss: () => set({ pending: null, error: null }),
 
+  rescan: async () => {
+    // 已在弹窗/导入中就别打扰；否则主动扫一次（覆盖"设备已挂载、新增了文件"或
+    // "通过软件重新接入"等不产生挂载边沿的场景）。
+    const { pending, isImporting } = get();
+    if (pending || isImporting) return;
+    // 防抖：窗口聚焦会频繁触发；扫描含逐文件 hash（I/O 重），8s 内不重复扫，
+    // 避免每次切回 app 都重扫整盘卡顿。
+    const nowTs = Date.now();
+    if (nowTs - lastRescanAt < 8000) return;
+    lastRescanAt = nowTs;
+    try {
+      const scan = await cmd.scanUsbCardNow();
+      if (scan) get().present(scan);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn("usbImport", "rescan 失败", { err: msg });
+    }
+  },
+
   confirmImport: async () => {
     const scan = get().pending;
     if (!scan) return;
@@ -58,9 +82,15 @@ export const useUsbImportStore = create<UsbImportStore>((set, get) => ({
     try {
       const paths = scan.newFiles.map((f) => f.path);
       const summary = await cmd.importDropPaths(paths);
-      // 导入成功 → 落去重集合（即便部分失败也标记，避免失败项每次重连反复弹；
-      // 失败项会进 summary.failures，由现有提取管线的重试/自愈兜底）。
-      await cmd.markCardImported(scan.newFiles.map((f) => f.hash));
+      // 去重集合**只**记录成功导入到工作区的文件（修复：旧实现把失败项也标记成
+      // "已导入"，导致复制失败的文件每次重新接入都被永久跳过、再也读不进来）。
+      // 判定：原始路径出现在 summary.failures 文案里的视为导入失败，不入去重集。
+      const succeededHashes = scan.newFiles
+        .filter((f) => !summary.failures.some((msg) => msg.includes(f.path)))
+        .map((f) => f.hash);
+      if (succeededHashes.length > 0) {
+        await cmd.markCardImported(succeededHashes);
+      }
       logger.info("usbImport", "导入完成", {
         imported: summary.created.length,
         failed: summary.failures.length,

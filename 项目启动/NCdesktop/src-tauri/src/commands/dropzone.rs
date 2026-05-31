@@ -726,7 +726,55 @@ pub fn import_files_core<S: EnqueueScheduler>(
         };
 
         let (asset_type, mime_type, name) = path_asset_meta(path);
-        let file_size = meta.len() as i64;
+
+        // ── 视频导入：先用 ffmpeg 提取音频，丢弃视频本体，改为导入 .m4a ──
+        //   需求：导入 mp4（及其他视频）时自动抽录音、丢弃视频、置入录音文件，
+        //   随后正常走音频转写（audio_asr_iflytek）管线。
+        //   做法：把音频抽到系统临时目录的 .m4a，再按音频资产 copy 进工作区；
+        //   原视频不进工作区（"丢弃"），source_data 仍记录其来源路径作溯源。
+        //   ffmpeg 不可用 / 抽取失败 → 记入 failures 并跳过（不把无法处理的视频塞进工作区）。
+        let mut copy_src: PathBuf = path.to_path_buf();
+        let mut temp_audio: Option<PathBuf> = None;
+        let (asset_type, mime_type, name) = if asset_type == "video" {
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(sanitize_file_stem)
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "video".to_string());
+            let tmp = std::env::temp_dir()
+                .join(format!("nc_import_{}_{}.m4a", uuid::Uuid::new_v4(), stem));
+            match crate::extraction::video_audio::extract_audio_to(path, &tmp) {
+                Ok(r) => {
+                    log::info!(
+                        "视频导入→提取音频: {} → {}（stream_copy={}, {}ms），丢弃视频本体",
+                        path_str,
+                        tmp.display(),
+                        r.stream_copy,
+                        r.elapsed_ms
+                    );
+                    copy_src = tmp.clone();
+                    temp_audio = Some(tmp);
+                    (
+                        "audio_clip".to_string(),
+                        "audio/mp4".to_string(),
+                        format!("{stem}.m4a"),
+                    )
+                }
+                Err(e) => {
+                    failures
+                        .push(format!("视频提取音频失败（已跳过，未导入视频）: {path_str} — {e}"));
+                    continue;
+                }
+            }
+        } else {
+            (asset_type, mime_type, name)
+        };
+
+        // file_size 取实际将导入的文件（视频场景为抽取出的 .m4a）
+        let file_size = fs::metadata(&copy_src)
+            .map(|m| m.len() as i64)
+            .unwrap_or_else(|_| meta.len() as i64);
         let asset_id = uuid::Uuid::new_v4().to_string();
 
         let safe_name = name
@@ -734,14 +782,21 @@ pub fn import_files_core<S: EnqueueScheduler>(
             .map(|c| if c == '/' || c == ':' { '_' } else { c })
             .collect::<String>();
         let dest_path = project_asset_dir.join(format!("{}_{}", &asset_id, safe_name));
-        if let Err(e) = fs::copy(path, &dest_path) {
+        if let Err(e) = fs::copy(&copy_src, &dest_path) {
             failures.push(format!(
                 "复制失败: {} -> {} — {}",
                 path_str,
                 dest_path.display(),
                 e
             ));
+            if let Some(t) = &temp_audio {
+                let _ = fs::remove_file(t);
+            }
             continue;
+        }
+        // 工作区已落盘，删除临时音频（视频场景）
+        if let Some(t) = &temp_audio {
+            let _ = fs::remove_file(t);
         }
 
         let asset = models::Asset {
@@ -873,8 +928,19 @@ pub async fn import_drop_paths(
         (pid, pname)
     };
 
-    let scheduler_adapter = AppHandleEnqueue { app: &app };
-    let core_out = import_files_core(&database.pool, &scheduler_adapter, &project_id, paths)?;
+    // import_files_core 是同步且可能耗时的（尤其视频导入要跑 ffmpeg 抽音频，大文件可达数秒）。
+    // 若直接在该 async 命令里同步执行，会阻塞 Tauri 的 async runtime worker，悬浮窗/主窗 UI
+    // 卡死（用户实测：mp4 拖入悬浮窗即卡死）。这里挪到 blocking 线程池执行。
+    // 注：import_files_core 全程不跨 await 持有 DB MutexGuard，放进 blocking 线程安全。
+    let pool = database.pool.clone();
+    let app_for_core = app.clone();
+    let project_id_for_core = project_id.clone();
+    let core_out = tokio::task::spawn_blocking(move || {
+        let scheduler_adapter = AppHandleEnqueue { app: &app_for_core };
+        import_files_core(&pool, &scheduler_adapter, &project_id_for_core, paths)
+    })
+    .await
+    .map_err(|e| format!("导入任务执行失败（blocking join）: {e}"))??;
 
     // 若 created 非空且至少有一个成功入队，则唤醒调度循环
     let any_enqueued = core_out.summary.created.len() > core_out.summary.failures_to_enqueue.len();

@@ -59,6 +59,38 @@ export interface ParseResult {
  */
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n?---\r?\n?([\s\S]*)$/;
 
+/**
+ * 剥离 body 头部残留的 frontmatter 块（防御下游脏数据）。
+ *
+ * 背景：正常衍生件只有 1 个 `---...---` 头。但当后端/KC 子进程误写出 2~3 个
+ * 连续 frontmatter 块时，主正则只吞掉第 1 个，剩余块会留在 body 头部，被前端
+ * 当普通 markdown 渲染（裸露的 `---` 水平线 + YAML 文本）。
+ *
+ * 策略：循环把 body 头部仍以 `---\r?\n` 开头的块整段丢弃（仅保留首块 frontmatter
+ * 作为返回值，残留块的内容直接抛弃），直到 body 不再以 frontmatter 块起头。
+ * 每剥离一块都 console.warn，便于定位上游产出问题。
+ *
+ * 边界：设上限避免极端构造输入造成的过度循环；body 头部的 `---` 若不构成
+ * 完整闭合块（如末尾未闭合）则不剥离，保持原样交给 markdown 渲染。
+ */
+function stripResidualFrontmatter(body: string): string {
+  let cleaned = body;
+  let stripped = 0;
+  const MAX_STRIP = 8; // 正常 ≤1 残留；上限纯防御
+  while (stripped < MAX_STRIP && FRONTMATTER_RE.test(cleaned)) {
+    const m = FRONTMATTER_RE.exec(cleaned);
+    if (!m) break;
+    cleaned = m[2] ?? "";
+    stripped += 1;
+  }
+  if (stripped > 0) {
+    console.warn(
+      `[parseFrontmatter] 检测到 ${stripped} 个残留 frontmatter 块并已丢弃（上游产出疑似多块头部）`,
+    );
+  }
+  return cleaned;
+}
+
 /** snake_case → camelCase 字段白名单 + 类型守卫 */
 function mapToCamelCase(raw: Record<string, unknown>): ParsedFrontmatter {
   const out: ParsedFrontmatter = {};
@@ -127,7 +159,7 @@ export function parseFrontmatter(markdown: string): ParseResult {
 
   // 空 frontmatter（`---\n---`）→ yaml.load 返回 null/undefined
   if (loaded === null || loaded === undefined) {
-    return { frontmatter: null, body };
+    return { frontmatter: null, body: stripResidualFrontmatter(body) };
   }
 
   // 非 plain object（如 frontmatter 写了一个数组）→ 视为无法解析
@@ -141,6 +173,6 @@ export function parseFrontmatter(markdown: string): ParseResult {
 
   return {
     frontmatter: mapToCamelCase(loaded as Record<string, unknown>),
-    body,
+    body: stripResidualFrontmatter(body),
   };
 }

@@ -94,6 +94,22 @@ pub struct KcSettingsPayload {
     pub openai_key_action: String,
     #[serde(default)]
     pub openai_key_value: String,
+
+    // base_url / model 覆盖（Unit 3）：非敏感字段，前端直接传字符串（空串=不配置）。
+    // `#[serde(default)]` 保证老前端不发这些字段时也能反序列化（向后兼容）。
+    #[serde(default)]
+    pub openai_base_url: Option<String>,
+    #[serde(default)]
+    pub openai_model: Option<String>,
+    #[serde(default)]
+    pub zhipu_base_url: Option<String>,
+    #[serde(default)]
+    pub zhipu_model: Option<String>,
+}
+
+/// 把前端传来的可选字符串归一化：`None` / 空白串 → `None`，否则 trim 后的值。
+fn normalize_opt_setting(v: Option<String>) -> Option<String> {
+    v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
 // =====================================================================
@@ -193,6 +209,11 @@ pub async fn set_kc_settings(
         enable_links: settings.enable_links,
         zhipu_api_key: new_zhipu.clone(),
         openai_api_key: new_openai.clone(),
+        // base_url / model：前端直传（空白归一化为 None）。
+        openai_base_url: normalize_opt_setting(settings.openai_base_url.clone()),
+        openai_model: normalize_opt_setting(settings.openai_model.clone()),
+        zhipu_base_url: normalize_opt_setting(settings.zhipu_base_url.clone()),
+        zhipu_model: normalize_opt_setting(settings.zhipu_model.clone()),
         outputstage_defense_mode: existing.outputstage_defense_mode,
     };
 
@@ -468,6 +489,7 @@ mod tests {
             zhipu_api_key: new_zhipu.clone(),
             openai_api_key: new_openai.clone(),
             outputstage_defense_mode: existing.outputstage_defense_mode,
+            ..Default::default()
         };
         settings::save_settings(&conn, &new_settings).expect("save ok");
 
@@ -651,6 +673,7 @@ mod tests {
             zhipu_api_key: Some("zhipu-fixture-key-1234".to_string()),
             openai_api_key: Some("sk-openai-fixture-9876".to_string()),
             outputstage_defense_mode: KcOutputStageDefenseMode::TempDirIsolation,
+            ..Default::default()
         };
         settings::save_settings(&conn, &payload_settings).expect("save");
 

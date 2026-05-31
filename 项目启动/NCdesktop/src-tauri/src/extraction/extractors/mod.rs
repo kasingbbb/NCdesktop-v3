@@ -7,6 +7,9 @@ pub mod audio_asr;
 // pub mod image_ocr;
 // pub mod pdf_scan;
 pub mod audio_asr_iflytek;
+// 图片 OCR：讯飞「通用文档识别(OCR 大模型)」se75ocrbm WebAPI。图片→MD 走此提取器；
+// PDF 不走 OCR（仍交给 markitdown）。见 get_extractor_for 路由。
+pub mod image_ocr_iflytek;
 pub mod docx;
 pub mod markitdown;
 pub mod pdf_text;
@@ -22,6 +25,16 @@ pub fn get_extractor_for(mime_type: &str, options: &ExtractOptions) -> Option<Bo
     let passthrough = text_passthrough::TextPassthroughExtractor;
     if passthrough.can_handle(mime_type) {
         return Some(Box::new(passthrough));
+    }
+
+    // 图片(jpg/png/bmp) → 讯飞 OCR 大模型（se75ocrbm），**先于** markitdown 拦截。
+    //   - 用户已购买图片 OCR 能力，图片转 MD 走 OCR 提取文字；
+    //   - PDF 不在此（image_ocr_iflytek::can_handle 不含 application/pdf）→ 仍走下方 markitdown；
+    //   - OCR 提取器 name != "markitdown"，故不受 runtime_check 短路影响：
+    //     python/markitdown 运行时不可用时，图片照样能通过 OCR 转换。
+    let ocr = image_ocr_iflytek::IflytekOcrExtractor;
+    if ocr.can_handle(mime_type) {
+        return Some(Box::new(ocr));
     }
 
     if options.markitdown_enabled && markitdown::supports_mime(mime_type) {
