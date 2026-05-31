@@ -402,12 +402,44 @@ fn rename_in_place_when_no_organize(
 /// custom_para_v1 / V17：integration 路径上引入 `categories` 表查询/upsert，
 /// `organize_asset_file_after_classify` 用 categories.slug 而非 LLM 字面字符串作为目录名；
 /// 同时把解析出的 slug 写入 `assets.category_slug` 作为弱外键（不强制 FK）。
+/// 等待某 asset 的提取任务落定（无 queued/running），最长 `timeout`。
+///
+/// 修复（2026-05-31 真机回归）：拖入 PDF 时**提取任务**（markitdown +
+/// PDF 标记 extract_pdf_annotations + sha256）与**本 AI 分类任务**并发跑；分类
+/// 通常更快，分类完会把源文件移进 `organized/`。若移动赢得竞态，提取侧读旧路径 →
+/// PDF 高亮/批注丢失、conversion_meta 的 sha256 计算失败。这里在移动前先等提取落定。
+/// 超时（默认 180s，足够大 PDF 跑完 markitdown）后仍继续整理，避免极端情况死等。
+async fn wait_for_extraction_settled(database: &Database, asset_id: &str, timeout: std::time::Duration) {
+    let start = std::time::Instant::now();
+    loop {
+        let settled = match database.conn() {
+            Ok(conn) => db::extraction::asset_extraction_settled(&conn, asset_id).unwrap_or(true),
+            Err(_) => true, // 取不到连接就别死等
+        };
+        if settled {
+            return;
+        }
+        if start.elapsed() >= timeout {
+            log::warn!(
+                "AI 整理：等待 asset={asset_id} 提取落定超时（{}s），仍继续整理（可能与提取竞态）",
+                timeout.as_secs()
+            );
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+}
+
 async fn apply_llm_classify_to_asset(
     database: &Database,
     asset: &models::Asset,
     classify_input: String,
 ) -> Result<(), String> {
     let r = crate::commands::llm::llm_classify_with_db(database, classify_input).await?;
+
+    // 修复（2026-05-31）：在移动/重命名源文件前，先等提取任务落定，避免把正被
+    // markitdown / PDF 标记提取 / sha256 读取的源文件移走（PDF 高亮批注丢失的根因）。
+    wait_for_extraction_settled(database, &asset.id, std::time::Duration::from_secs(180)).await;
 
     // V17：先在短锁内解析 library_id（asset.project_id → project.library_id），
     // 再在锁外做文件 IO；organize 需要 DB 读，因此重新取一次锁。

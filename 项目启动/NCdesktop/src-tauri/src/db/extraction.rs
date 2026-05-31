@@ -338,6 +338,23 @@ pub fn update_task_status(
     Ok(())
 }
 
+/// 判断某 asset 的提取是否已"落定"（无 queued / running 的 pipeline_task）。
+///
+/// 用于 AI 分类整理在**移动源文件前**先确认提取（markitdown + PDF 标记 + sha256）
+/// 不再读该源文件——否则移动赢得竞态会让 PDF 高亮/批注丢失、sha256 失败
+/// （2026-05-31 真机回归根因）。返回 `true` = 已落定（可安全移动）。
+/// 查不到任何 task（COUNT=0）也视为落定，避免死等。
+pub fn asset_extraction_settled(conn: &Connection, asset_id: &str) -> Result<bool, String> {
+    let in_flight: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pipeline_tasks WHERE asset_id = ?1 AND status IN ('queued','running')",
+            params![asset_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("查询 asset 提取在途任务失败: {e}"))?;
+    Ok(in_flight == 0)
+}
+
 /// 启动恢复：将所有 running 状态的任务重置为 queued
 pub fn reset_running_tasks(conn: &Connection) -> Result<u64, String> {
     let changed = conn
