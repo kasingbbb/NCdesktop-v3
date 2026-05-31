@@ -175,6 +175,12 @@ bash "${ROOT_DIR}/scripts/prepare-embedded-markitdown-runtime.sh"
 step "step 3/10 prepare-venv-shim"
 bash "${ROOT_DIR}/scripts/prepare-venv-shim.sh"
 
+# ── [step 3b/10] prepare-embedded-ffmpeg.sh ─────────────────────────────────
+# 下载静态 arm64 ffmpeg 到 src-tauri/resources/ffmpeg，供视频导入抽音频内置回退
+# （用户机无 Homebrew ffmpeg 时仍可用）。幂等：已存在且 sha256 通过则跳过。
+step "step 3b/10 prepare-embedded-ffmpeg"
+bash "${ROOT_DIR}/scripts/prepare-embedded-ffmpeg.sh"
+
 # ── [step 4/10] tauri build ─────────────────────────────────────────────────
 step "step 4/10 tauri build"
 # Frontend bundle must exist before Tauri's beforeBuildCommand picks it up,
@@ -196,7 +202,7 @@ fi
 # without -L. AC-3 red line: NEVER `cp -RL` / `cp -L` on directories).
 step "step 4b/10 inject runtime into .app"
 mkdir -p "${RESOURCES_DIR}"
-rm -rf "${RESOURCES_DIR}/python" "${RESOURCES_DIR}/markitdown-venv" "${RESOURCES_DIR}/runtime-manifest.json"
+rm -rf "${RESOURCES_DIR}/python" "${RESOURCES_DIR}/markitdown-venv" "${RESOURCES_DIR}/runtime-manifest.json" "${RESOURCES_DIR}/ffmpeg"
 # hotfix 2026-05-26: python 源路径与 manifest 源路径必须一致 ——
 # `prepare-embedded-python.sh` 写到 `src-tauri/resources/python`（task_001 落点），
 # `prepare-embedded-markitdown-runtime.sh` pip install 到同目录的 site-packages，
@@ -212,6 +218,11 @@ ln -sf "../../python/bin/python3"    "${RESOURCES_DIR}/markitdown-venv/bin/pytho
 ln -sf "../../python/bin/python3"    "${RESOURCES_DIR}/markitdown-venv/bin/python"
 ln -sf "../../python/bin/markitdown" "${RESOURCES_DIR}/markitdown-venv/bin/markitdown" 2>/dev/null || true
 ln -sf "../python/lib"               "${RESOURCES_DIR}/markitdown-venv/lib"
+
+# 内置静态 ffmpeg → Resources/ffmpeg（视频导入抽音频的自包含回退；
+# extraction::video_audio::locate_ffmpeg 优先探 ../Resources/ffmpeg）。
+cp "${ROOT_DIR}/src-tauri/resources/ffmpeg" "${RESOURCES_DIR}/ffmpeg"
+chmod +x "${RESOURCES_DIR}/ffmpeg"
 
 # ── [step 4c/10] inject KC runtime + optimize kc-venv ───────────────────────
 # KC (Knowledge Compiler) runtime 注入到 .app/Contents/Resources/kc/。

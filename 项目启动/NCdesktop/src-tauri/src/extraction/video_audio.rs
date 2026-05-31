@@ -89,6 +89,18 @@ pub fn extract_audio_to(
 // ── 内部工具 ──────────────────────────────────────────────────────────────
 
 fn locate_ffmpeg() -> Result<PathBuf, String> {
+    // 0) bundle 内置 ffmpeg（自包含分发，DMG 打包时由 build-macos-dmg.sh 注入）：
+    //    <App>.app/Contents/Resources/ffmpeg。可执行文件在 Contents/MacOS/<bin>，
+    //    故 ../Resources/ffmpeg。dev/未打包时此路径不存在 → 落到下面 Homebrew/PATH。
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(macos_dir) = exe.parent() {
+            let bundled = macos_dir.join("../Resources/ffmpeg");
+            if bundled.exists() {
+                return Ok(bundled);
+            }
+        }
+    }
+
     // macOS Homebrew 默认绝对路径优先（.app 不继承 shell PATH，故先探绝对路径）
     for candidate in &[
         "/opt/homebrew/bin/ffmpeg",

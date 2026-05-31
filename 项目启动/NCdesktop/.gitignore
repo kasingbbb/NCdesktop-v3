@@ -10,6 +10,8 @@ build/runtime/
 # 嵌入式 Python + venv 由 scripts/prepare-embedded-*.sh 生成，不入仓（363M PBS Python）
 src-tauri/resources/python/
 src-tauri/resources/markitdown-venv/
+# 嵌入式静态 ffmpeg（43M）由 scripts/prepare-embedded-ffmpeg.sh 下载，不入仓
+src-tauri/resources/ffmpeg
 
 # Tauri 生成文件
 src-tauri/target/
