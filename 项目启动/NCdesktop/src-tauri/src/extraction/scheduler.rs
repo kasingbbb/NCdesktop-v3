@@ -1,24 +1,63 @@
-use std::path::Path;
-use std::sync::Arc;
-use std::time::Instant;
-use tokio::sync::Mutex as TokioMutex;
-use tauri::{AppHandle, Emitter, Manager};
-use crate::db::Database;
-use crate::db::extraction as db_ext;
 use crate::db::conversion_meta::{self as db_conv_meta, ConversionMetaRow};
+use crate::db::extraction as db_ext;
+use crate::db::Database;
 use crate::extraction::conversion::{classify_error, file_sha256};
-use crate::extraction::extractors::{
-    get_extractor_for, get_fallback_extractor_for_excluding,
-};
+use crate::extraction::extractors::{get_extractor_for, get_fallback_extractor_for_excluding};
 use crate::extraction::failure_code::FailureCode;
 use crate::extraction::models::{ExtractOptions, ExtractionError, ExtractionResult};
 use crate::extraction::runtime_check::RuntimeCheckState;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Instant;
+use tauri::{AppHandle, Emitter, Manager};
+use tokio::sync::{Mutex as TokioMutex, Semaphore};
 use uuid::Uuid;
 
 const SETTING_MARKITDOWN_ENABLED: &str = "markitdownEnabled";
 const SETTING_MARKITDOWN_PYTHON_CMD: &str = "markitdownPythonCmd";
 /// task_014 Fix-A3：讯飞 ASR language 覆盖；默认走 audio_asr_iflytek::DEFAULT_IFLYTEK_LANGUAGE ("cn")。
 const SETTING_IFLYTEK_LANGUAGE: &str = "iflytekLanguage";
+
+// ─── 并行调度的分桶并发上限（按提取器类型限流）─────────────────────────────
+// 讯飞 ASR / OCR 有速率限制，并发过高会撞限流/起冲突 → 各限 2；其余（markitdown
+// 子进程 / 纯文本 / pdf 文本）CPU/IO 为主、无外部限流 → 限 5。
+const MAX_CONCURRENCY_ASR: usize = 2;
+const MAX_CONCURRENCY_OCR: usize = 2;
+const MAX_CONCURRENCY_OTHER: usize = 5;
+
+/// 任务所属并发桶（按 asset mime 前缀判定）。
+enum TaskCategory {
+    /// audio/* → 讯飞录音转写
+    Asr,
+    /// image/* → 讯飞图片 OCR
+    Ocr,
+    /// 其余（pdf/docx/epub/text…）→ markitdown 等
+    Other,
+}
+
+/// 批量 peek 队列中 queued 任务（不认领；dispatcher 据此分桶 + try_acquire）。
+fn db_get_queued_batch(app: &AppHandle, limit: i64) -> Vec<db_ext::PipelineTaskRow> {
+    let db = app.state::<Database>();
+    match db.conn() {
+        Ok(conn) => db_ext::get_queued_tasks(&conn, limit).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// 按 asset mime 前缀把任务分到并发桶。取不到 asset/mime → 归为 Other（process_task_body
+/// 内部会再次校验 asset 是否存在并妥善失败）。
+fn db_task_category(app: &AppHandle, asset_id: &str) -> TaskCategory {
+    let mime = db_get_asset(app, asset_id)
+        .map(|a| a.mime_type)
+        .unwrap_or_default();
+    if mime.starts_with("audio/") {
+        TaskCategory::Asr
+    } else if mime.starts_with("image/") {
+        TaskCategory::Ocr
+    } else {
+        TaskCategory::Other
+    }
+}
 
 pub struct PipelineScheduler {
     is_running: Arc<TokioMutex<bool>>,
@@ -40,24 +79,27 @@ impl PipelineScheduler {
         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
         if db_ext::get_extracted_content(&conn, asset_id)?.is_none() {
-            db_ext::insert_extracted_content(&conn, &db_ext::ExtractedContentRow {
-                id: Uuid::new_v4().to_string(),
-                asset_id: asset_id.to_string(),
-                status: "pending".to_string(),
-                error_message: None,
-                retry_count: 0,
-                raw_text: None,
-                structured_md: None,
-                quality_level: 0,
-                extractor_type: String::new(),
-                segments_json: None,
-                // task_026：新增 row struct 字段；初始 pending 行尚未走 KC，None
-                // 即表"未 enrich"。`insert_extracted_content` SQL 未列 kc_enriched，
-                // SQLite ALTER TABLE 默认 NULL，与 None 一致。
-                kc_enriched: None,
-                created_at: now.clone(),
-                updated_at: now.clone(),
-            })?;
+            db_ext::insert_extracted_content(
+                &conn,
+                &db_ext::ExtractedContentRow {
+                    id: Uuid::new_v4().to_string(),
+                    asset_id: asset_id.to_string(),
+                    status: "pending".to_string(),
+                    error_message: None,
+                    retry_count: 0,
+                    raw_text: None,
+                    structured_md: None,
+                    quality_level: 0,
+                    extractor_type: String::new(),
+                    segments_json: None,
+                    // task_026：新增 row struct 字段；初始 pending 行尚未走 KC，None
+                    // 即表"未 enrich"。`insert_extracted_content` SQL 未列 kc_enriched，
+                    // SQLite ALTER TABLE 默认 NULL，与 None 一致。
+                    kc_enriched: None,
+                    created_at: now.clone(),
+                    updated_at: now.clone(),
+                },
+            )?;
         }
 
         let task = db_ext::PipelineTaskRow {
@@ -76,10 +118,10 @@ impl PipelineScheduler {
         };
 
         match db_ext::insert_pipeline_task(&conn, &task) {
-            Ok(_) => {},
+            Ok(_) => {}
             Err(e) if e.contains("UNIQUE constraint") => {
                 return Ok("already_queued".to_string());
-            },
+            }
             Err(e) => return Err(e),
         }
 
@@ -109,71 +151,220 @@ impl PipelineScheduler {
                 *guard = true;
             }
 
+            // ─── 分桶限流的并发调度（替代原单任务串行循环）─────────────────────
+            // 按提取器类型分三桶限并发：ASR(audio/*)≤2、OCR(image/*)≤2、其他≤5。
+            // 单 dispatcher 负责「认领 + spawn」，每任务在独立 spawn 里跑
+            // process_task_body。try_acquire 失败（该桶已满）→ 跳过此任务、不阻塞
+            // 其他桶（避免队头阻塞）。认领即 mark_running，使下轮 peek 不再返回它
+            // （单 dispatcher，无抢任务竞态）。DB 已 WAL + busy_timeout=5000，并发写安全。
+            let sem_asr = Arc::new(Semaphore::new(MAX_CONCURRENCY_ASR));
+            let sem_ocr = Arc::new(Semaphore::new(MAX_CONCURRENCY_OCR));
+            let sem_other = Arc::new(Semaphore::new(MAX_CONCURRENCY_OTHER));
+
             loop {
-                // ─── 1. 取下一个待处理任务（sync 辅助函数，不跨 await 持有 MutexGuard）
-                let next_task = match db_get_next_task(&app) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        log::error!("调度器：{e}，退出调度循环");
-                        break;
-                    }
-                };
+                let batch = db_get_queued_batch(&app, 32);
 
-                let Some(task) = next_task else {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-
-                    let has_tasks = match db_has_queued_tasks(&app) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            log::error!("调度器：{e}，退出调度循环");
+                if batch.is_empty() {
+                    let inflight = (MAX_CONCURRENCY_ASR - sem_asr.available_permits())
+                        + (MAX_CONCURRENCY_OCR - sem_ocr.available_permits())
+                        + (MAX_CONCURRENCY_OTHER - sem_other.available_permits());
+                    if inflight == 0 {
+                        // 真空闲：短睡后若确无 queued 则退出（下次 enqueue 会重启 start()）。
+                        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                        if !db_has_queued_tasks(&app).unwrap_or(false) {
                             break;
                         }
-                    };
-
-                    if !has_tasks {
-                        break;
+                    } else {
+                        // 还有在途任务但暂无可取（都被认领） → 等它们完成腾出 permit。
+                        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
                     }
                     continue;
-                };
+                }
 
-                // ─── 2. 标记任务为运行中
-                db_mark_task_running(&app, &task.id, &task.asset_id);
+                let mut dispatched_any = false;
+                for task in batch {
+                    let sem = match db_task_category(&app, &task.asset_id) {
+                        TaskCategory::Asr => sem_asr.clone(),
+                        TaskCategory::Ocr => sem_ocr.clone(),
+                        TaskCategory::Other => sem_other.clone(),
+                    };
+                    // 该桶已满 → 跳过（任务保持 queued），让其他桶继续 dispatch。
+                    let Ok(permit) = sem.try_acquire_owned() else {
+                        continue;
+                    };
+                    db_mark_task_running(&app, &task.id, &task.asset_id);
+                    let app = app.clone();
+                    tokio::spawn(async move {
+                        PipelineScheduler::process_task_body(app, task).await;
+                        drop(permit); // 释放该桶一个并发额度
+                    });
+                    dispatched_any = true;
+                }
 
-                let _ = app.emit("extraction:progress", serde_json::json!({
+                if !dispatched_any {
+                    // 本轮所有命中桶都满 → 等一个 permit 释放再 peek。
+                    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+                }
+            }
+
+            // 退出循环时重置运行标志，以便下次调用 start() 能重新启动
+            let mut guard = is_running.lock().await;
+            *guard = false;
+        });
+    }
+
+    /// 单个任务的完整处理体（原 start() 循环体抽出为关联函数，便于并发 spawn）。
+    /// 由 dispatcher 在认领任务（已 mark_running）后 spawn 调用。
+    /// 注：函数体沿用原循环体，仅把 `continue;` 改为 `return;`；内部缩进未重排
+    /// （Rust 不依赖缩进），构建后由 cargo fmt 归正。
+    async fn process_task_body(app: AppHandle, task: db_ext::PipelineTaskRow) {
+        let _ = app.emit(
+            "extraction:progress",
+            serde_json::json!({
+                "assetId": task.asset_id,
+                "status": "extracting",
+                "message": "正在提取..."
+            }),
+        );
+
+        // ─── 3. 取素材信息
+        let asset_info = db_get_asset(&app, &task.asset_id);
+
+        let Some(asset) = asset_info else {
+            db_mark_task_status(&app, &task.id, &task.asset_id, "failed", "素材不存在");
+            return;
+        };
+
+        // ─── 4. 查找合适的提取器
+        let options = db_get_extract_options(&app).unwrap_or_default();
+
+        // task_010 AC-3：video/* 显式拒绝（本期不支持视频提取）。
+        // 与 audio/* 不同：audio/* 由 `get_extractor_for` 通过 fallback
+        // 链路命中 `audio_asr_iflytek`（IflytekAsrExtractor.can_handle）；
+        // video/* 当前**没有任何 extractor**，若不显式拦截会被默认 "unsupported"
+        // 路径吞掉、不写 `conversion_meta.failure_code` —— 违反技术约束
+        // "不得静默吃掉路由错误"。
+        //
+        // 实现：复用 `FailureCode::EAudioWrongRoute`（同语义 "走错路由 / 本期
+        // 不接"，PRD 底线 #4 锁定 8 错误码不增加变体）。落 conversion_meta
+        // 失败码 + materialize_placeholder + db_mark_task_status('failed')。
+        if video_route_should_reject(&asset.mime_type) {
+            let code = FailureCode::EAudioWrongRoute;
+            let source_hash =
+                file_sha256(Path::new(&asset.file_path)).unwrap_or_else(|_| String::new());
+            write_conversion_meta(
+                &app,
+                &asset.id,
+                "video_reject",
+                &asset.mime_type,
+                &source_hash,
+                0,
+                false,
+                Some(code.as_str()),
+            );
+            update_conversion_meta_failure_code(&app, &asset.id, Some(code));
+            let reason = format!(
+                "video/* not supported (mime={}, failure_code={})",
+                asset.mime_type, code
+            );
+            db_mark_task_status(&app, &task.id, &task.asset_id, "failed", &reason);
+            let _ = app.emit(
+                "extraction:failed",
+                serde_json::json!({
                     "assetId": task.asset_id,
-                    "status": "extracting",
-                    "message": "正在提取..."
-                }));
+                    "errorMessage": reason,
+                    "failureCode": code.as_str(),
+                }),
+            );
+            if source_asset_should_materialize(&asset) {
+                materialize_placeholder(&app, &asset, code.as_str(), &reason);
+            }
+            return;
+        }
 
-                // ─── 3. 取素材信息
-                let asset_info = db_get_asset(&app, &task.asset_id);
+        let extractor = get_extractor_for(&asset.mime_type, &options);
+        let Some(extractor) = extractor else {
+            db_mark_task_status(&app, &task.id, &task.asset_id, "unsupported", "");
+            if source_asset_should_materialize(&asset) {
+                if source_asset_is_markdown(&asset) {
+                    materialize_source_markdown(&app, &asset);
+                } else {
+                    materialize_placeholder(
+                        &app,
+                        &asset,
+                        "unsupported",
+                        &format!("无可用提取器（mime: {}）", asset.mime_type),
+                    );
+                }
+            }
+            return;
+        };
 
-                let Some(asset) = asset_info else {
-                    db_mark_task_status(&app, &task.id, &task.asset_id, "failed", "素材不存在");
-                    continue;
-                };
+        // ─── 5. 执行提取（ADR-003：primary → fallback → placeholder 三级编排）
+        let primary_name = extractor.name().to_string();
 
-                // ─── 4. 查找合适的提取器
-                let options = db_get_extract_options(&app).unwrap_or_default();
+        // task_007 FIX (AC-3)：markitdown 路由前读 RuntimeCheckState 快照；
+        // 自检失败时不进 Python 子进程，直接写 conversion_meta.failure_code
+        // + 落 placeholder + 标记任务失败，跳过本任务。
+        if let Some(code) = runtime_check_short_circuit(&primary_name, &options) {
+            let source_hash =
+                file_sha256(Path::new(&asset.file_path)).unwrap_or_else(|_| String::new());
+            write_conversion_meta(
+                &app,
+                &asset.id,
+                &primary_name,
+                &asset.mime_type,
+                &source_hash,
+                0,
+                false,
+                Some(code.as_str()),
+            );
+            update_conversion_meta_failure_code(&app, &asset.id, Some(code));
+            let reason = format!("runtime self-check failed (failure_code={code})");
+            db_mark_task_status(&app, &task.id, &task.asset_id, "failed", &reason);
+            let _ = app.emit(
+                "extraction:failed",
+                serde_json::json!({
+                    "assetId": task.asset_id,
+                    "errorMessage": reason,
+                    "failureCode": code.as_str(),
+                }),
+            );
+            if source_asset_should_materialize(&asset) {
+                materialize_placeholder(&app, &asset, code.as_str(), &reason);
+            }
+            return;
+        }
 
-                // task_010 AC-3：video/* 显式拒绝（本期不支持视频提取）。
-                // 与 audio/* 不同：audio/* 由 `get_extractor_for` 通过 fallback
-                // 链路命中 `audio_asr_iflytek`（IflytekAsrExtractor.can_handle）；
-                // video/* 当前**没有任何 extractor**，若不显式拦截会被默认 "unsupported"
-                // 路径吞掉、不写 `conversion_meta.failure_code` —— 违反技术约束
-                // "不得静默吃掉路由错误"。
-                //
-                // 实现：复用 `FailureCode::EAudioWrongRoute`（同语义 "走错路由 / 本期
-                // 不接"，PRD 底线 #4 锁定 8 错误码不增加变体）。落 conversion_meta
-                // 失败码 + materialize_placeholder + db_mark_task_status('failed')。
-                if video_route_should_reject(&asset.mime_type) {
-                    let code = FailureCode::EAudioWrongRoute;
-                    let source_hash = file_sha256(Path::new(&asset.file_path))
-                        .unwrap_or_else(|_| String::new());
+        // task_009 (AC-3)：进入 markitdown 子进程前，对 `application/pdf` 做
+        // 结构性嗅探（XObject + Font 引用判定），扫描型 PDF 直接短路写
+        // `conversion_meta.failure_code = EScanPdfUnsupported` 并产出 placeholder，
+        // 不再调用 markitdown（H6：禁启发式 / 禁"运行后看 stdout 长度"）。
+        //
+        // 仅当 primary 为 markitdown 时启用：text-passthrough 等其他 extractor
+        // 不消费扫描件；fallback (pdf_text) 由 task_010 / 后续 OCR 接入。
+        //
+        // 决策语义：
+        // - Ok(true)  → 短路 + EScanPdfUnsupported（与 runtime_check 短路语义一致）
+        // - Ok(false) → 走常规 markitdown 路径
+        // - Err(e)    → 按 ParseError 处理（不"猜测"成 scan）：log warn 后 fall-through，
+        //               让 markitdown 自尝试；其失败仍走 task_008 失效四元分类。
+        // hotfix 2026-05-26：scan_pdf_route_decision 在某些 PDF 上让 lopdf hang
+        // 整个 tokio runtime（独立 binary 测试无 hang，但 main worktree
+        // release build 必现）。临时禁用短路 —— 所有 PDF 直接走 markitdown，
+        // 由 markitdown 90s 超时 + EOutputEmpty 兜底扫描件。
+        // task_009 多页采样修复已提交（scan_pdf_detect.rs），但应用集成
+        // 仍受 lopdf 死循环阻塞，需要更深的 lopdf 调用栈诊断。
+        if false && primary_name == "markitdown" && asset.mime_type == "application/pdf" {
+            match scan_pdf_route_decision(Path::new(&asset.file_path)) {
+                ScanPdfDecision::ShortCircuit => {
+                    let code = FailureCode::EScanPdfUnsupported;
+                    let source_hash =
+                        file_sha256(Path::new(&asset.file_path)).unwrap_or_else(|_| String::new());
                     write_conversion_meta(
                         &app,
                         &asset.id,
-                        "video_reject",
+                        &primary_name,
                         &asset.mime_type,
                         &source_hash,
                         0,
@@ -181,11 +372,7 @@ impl PipelineScheduler {
                         Some(code.as_str()),
                     );
                     update_conversion_meta_failure_code(&app, &asset.id, Some(code));
-                    let reason = format!(
-                        "video/* not supported (mime={}, failure_code={})",
-                        asset.mime_type,
-                        code
-                    );
+                    let reason = format!("scan pdf detected pre-markitdown (failure_code={code})");
                     db_mark_task_status(&app, &task.id, &task.asset_id, "failed", &reason);
                     let _ = app.emit(
                         "extraction:failed",
@@ -198,301 +385,173 @@ impl PipelineScheduler {
                     if source_asset_should_materialize(&asset) {
                         materialize_placeholder(&app, &asset, code.as_str(), &reason);
                     }
-                    continue;
+                    return;
                 }
+                ScanPdfDecision::FallThrough => {
+                    // 非扫描 / 解析失败 → 走常规 markitdown 路径
+                }
+            }
+        }
 
-                let extractor = get_extractor_for(&asset.mime_type, &options);
-                let Some(extractor) = extractor else {
-                    db_mark_task_status(&app, &task.id, &task.asset_id, "unsupported", "");
-                    if source_asset_should_materialize(&asset) {
-                        if source_asset_is_markdown(&asset) {
-                            materialize_source_markdown(&app, &asset);
-                        } else {
-                            materialize_placeholder(
+        let primary_attempt = run_extractor_blocking(extractor, &asset.file_path, &options).await;
+
+        // 计算源文件哈希（任一路径写 conversion_meta 都用同一份；失败仅 warn）
+        let source_hash = file_sha256(Path::new(&asset.file_path)).unwrap_or_else(|e| {
+            log::warn!("调度器：计算 file_sha256 失败 {}: {}", asset.file_path, e);
+            String::new()
+        });
+
+        let mime_for_meta = asset.mime_type.clone();
+        let mut primary_attempt_class: Option<String> = None;
+        let primary_step = match &primary_attempt {
+            Ok(r) if extraction_is_usable(r) => Step::PrimarySuccess,
+            Ok(_) => Step::PrimaryEmpty,
+            Err(e) => {
+                let class = extract_error_class(e);
+                primary_attempt_class = Some(class.to_string());
+                Step::PrimaryError
+            }
+        };
+
+        match primary_step {
+            Step::PrimarySuccess => {
+                // 真成功路径：写 extracted_content + materialize_md + conversion_meta
+                // 这里 primary_attempt 一定是 Ok（见 primary_step 决策），但仍用
+                // 模式匹配避免 unwrap/expect。
+                let r = match primary_attempt {
+                    Ok(r) => r,
+                    Err(_) => unreachable!("PrimarySuccess decided from Ok arm"),
+                };
+                save_and_materialize(&app, &asset, &task, &r).await;
+                write_conversion_meta(
+                    &app,
+                    &asset.id,
+                    &primary_name,
+                    &mime_for_meta,
+                    &source_hash,
+                    r.quality_level,
+                    false,
+                    None,
+                );
+            }
+            Step::PrimaryEmpty | Step::PrimaryError => {
+                // 登记 primary 失败/空 一行 conversion_meta
+                let primary_err_class = primary_attempt_class
+                    .clone()
+                    .unwrap_or_else(|| "empty_output".to_string());
+                write_conversion_meta(
+                    &app,
+                    &asset.id,
+                    &primary_name,
+                    &mime_for_meta,
+                    &source_hash,
+                    0,
+                    false,
+                    Some(&primary_err_class),
+                );
+
+                // 尝试 fallback（排除 primary 名称防止死循环）
+                let fb = get_fallback_extractor_for_excluding(&asset.mime_type, &primary_name);
+                let mut fallback_done = false;
+                if let Some(fb_extractor) = fb {
+                    let fb_name = fb_extractor.name().to_string();
+                    let _ = app.emit(
+                        "extraction:progress",
+                        serde_json::json!({
+                            "assetId": task.asset_id,
+                            "status": "extracting",
+                            "fallbackUsed": true,
+                            "message": format!("{primary_name} 失败，回退到 {fb_name}..."),
+                        }),
+                    );
+                    let fb_attempt =
+                        run_extractor_blocking(fb_extractor, &asset.file_path, &options).await;
+                    match fb_attempt {
+                        Ok(r) if extraction_is_usable(&r) => {
+                            save_and_materialize(&app, &asset, &task, &r).await;
+                            write_conversion_meta(
                                 &app,
-                                &asset,
-                                "unsupported",
-                                &format!("无可用提取器（mime: {}）", asset.mime_type),
+                                &asset.id,
+                                &fb_name,
+                                &mime_for_meta,
+                                &source_hash,
+                                r.quality_level,
+                                true,
+                                None,
+                            );
+                            fallback_done = true;
+                        }
+                        Ok(_) => {
+                            // fallback 也空
+                            write_conversion_meta(
+                                &app,
+                                &asset.id,
+                                &fb_name,
+                                &mime_for_meta,
+                                &source_hash,
+                                0,
+                                true,
+                                Some("empty_output"),
+                            );
+                        }
+                        Err(fb_err) => {
+                            let fb_class = extract_error_class(&fb_err);
+                            write_conversion_meta(
+                                &app,
+                                &asset.id,
+                                &fb_name,
+                                &mime_for_meta,
+                                &source_hash,
+                                0,
+                                true,
+                                Some(fb_class),
                             );
                         }
                     }
-                    continue;
-                };
+                }
 
-                // ─── 5. 执行提取（ADR-003：primary → fallback → placeholder 三级编排）
-                let primary_name = extractor.name().to_string();
-
-                // task_007 FIX (AC-3)：markitdown 路由前读 RuntimeCheckState 快照；
-                // 自检失败时不进 Python 子进程，直接写 conversion_meta.failure_code
-                // + 落 placeholder + 标记任务失败，跳过本任务。
-                if let Some(code) = runtime_check_short_circuit(&primary_name, &options) {
-                    let source_hash = file_sha256(Path::new(&asset.file_path))
-                        .unwrap_or_else(|_| String::new());
-                    write_conversion_meta(
-                        &app,
-                        &asset.id,
-                        &primary_name,
-                        &asset.mime_type,
-                        &source_hash,
-                        0,
-                        false,
-                        Some(code.as_str()),
+                if !fallback_done {
+                    // 都失败 → placeholder（不推进 derivative_version）
+                    let error_msg = match &primary_attempt {
+                        Ok(_) => "提取成功但结构化内容为空".to_string(),
+                        Err(e) => e.to_string(),
+                    };
+                    // 把真实失败原因打到日志，避免下游只看到 code=conversion_error
+                    // 排查不到根因。primary_name / asset_id 一并带上方便定位。
+                    log::warn!(
+                        "调度器：提取失败 asset={} primary={} reason={}",
+                        asset.id,
+                        primary_name,
+                        error_msg
                     );
-                    update_conversion_meta_failure_code(&app, &asset.id, Some(code));
-                    let reason =
-                        format!("runtime self-check failed (failure_code={code})");
-                    db_mark_task_status(
+                    let is_terminal = task.retry_count + 1 >= task.max_retries;
+                    db_handle_task_error(
                         &app,
                         &task.id,
                         &task.asset_id,
-                        "failed",
-                        &reason,
+                        task.retry_count,
+                        task.max_retries,
+                        &error_msg,
                     );
                     let _ = app.emit(
                         "extraction:failed",
                         serde_json::json!({
                             "assetId": task.asset_id,
-                            "errorMessage": reason,
-                            "failureCode": code.as_str(),
+                            "errorMessage": error_msg,
+                            "retryCount": task.retry_count + 1,
                         }),
                     );
-                    if source_asset_should_materialize(&asset) {
-                        materialize_placeholder(&app, &asset, code.as_str(), &reason);
-                    }
-                    continue;
-                }
-
-                // task_009 (AC-3)：进入 markitdown 子进程前，对 `application/pdf` 做
-                // 结构性嗅探（XObject + Font 引用判定），扫描型 PDF 直接短路写
-                // `conversion_meta.failure_code = EScanPdfUnsupported` 并产出 placeholder，
-                // 不再调用 markitdown（H6：禁启发式 / 禁"运行后看 stdout 长度"）。
-                //
-                // 仅当 primary 为 markitdown 时启用：text-passthrough 等其他 extractor
-                // 不消费扫描件；fallback (pdf_text) 由 task_010 / 后续 OCR 接入。
-                //
-                // 决策语义：
-                // - Ok(true)  → 短路 + EScanPdfUnsupported（与 runtime_check 短路语义一致）
-                // - Ok(false) → 走常规 markitdown 路径
-                // - Err(e)    → 按 ParseError 处理（不"猜测"成 scan）：log warn 后 fall-through，
-                //               让 markitdown 自尝试；其失败仍走 task_008 失效四元分类。
-                // hotfix 2026-05-26：scan_pdf_route_decision 在某些 PDF 上让 lopdf hang
-                // 整个 tokio runtime（独立 binary 测试无 hang，但 main worktree
-                // release build 必现）。临时禁用短路 —— 所有 PDF 直接走 markitdown，
-                // 由 markitdown 90s 超时 + EOutputEmpty 兜底扫描件。
-                // task_009 多页采样修复已提交（scan_pdf_detect.rs），但应用集成
-                // 仍受 lopdf 死循环阻塞，需要更深的 lopdf 调用栈诊断。
-                if false && primary_name == "markitdown" && asset.mime_type == "application/pdf" {
-                    match scan_pdf_route_decision(Path::new(&asset.file_path)) {
-                        ScanPdfDecision::ShortCircuit => {
-                            let code = FailureCode::EScanPdfUnsupported;
-                            let source_hash = file_sha256(Path::new(&asset.file_path))
-                                .unwrap_or_else(|_| String::new());
-                            write_conversion_meta(
-                                &app,
-                                &asset.id,
-                                &primary_name,
-                                &asset.mime_type,
-                                &source_hash,
-                                0,
-                                false,
-                                Some(code.as_str()),
-                            );
-                            update_conversion_meta_failure_code(&app, &asset.id, Some(code));
-                            let reason = format!(
-                                "scan pdf detected pre-markitdown (failure_code={code})"
-                            );
-                            db_mark_task_status(
-                                &app,
-                                &task.id,
-                                &task.asset_id,
-                                "failed",
-                                &reason,
-                            );
-                            let _ = app.emit(
-                                "extraction:failed",
-                                serde_json::json!({
-                                    "assetId": task.asset_id,
-                                    "errorMessage": reason,
-                                    "failureCode": code.as_str(),
-                                }),
-                            );
-                            if source_asset_should_materialize(&asset) {
-                                materialize_placeholder(&app, &asset, code.as_str(), &reason);
-                            }
-                            continue;
-                        }
-                        ScanPdfDecision::FallThrough => {
-                            // 非扫描 / 解析失败 → 走常规 markitdown 路径
-                        }
-                    }
-                }
-
-                let primary_attempt =
-                    run_extractor_blocking(extractor, &asset.file_path, &options).await;
-
-                // 计算源文件哈希（任一路径写 conversion_meta 都用同一份；失败仅 warn）
-                let source_hash = file_sha256(Path::new(&asset.file_path)).unwrap_or_else(|e| {
-                    log::warn!("调度器：计算 file_sha256 失败 {}: {}", asset.file_path, e);
-                    String::new()
-                });
-
-                let mime_for_meta = asset.mime_type.clone();
-                let mut primary_attempt_class: Option<String> = None;
-                let primary_step = match &primary_attempt {
-                    Ok(r) if extraction_is_usable(r) => Step::PrimarySuccess,
-                    Ok(_) => Step::PrimaryEmpty,
-                    Err(e) => {
-                        let class = extract_error_class(e);
-                        primary_attempt_class = Some(class.to_string());
-                        Step::PrimaryError
-                    }
-                };
-
-                match primary_step {
-                    Step::PrimarySuccess => {
-                        // 真成功路径：写 extracted_content + materialize_md + conversion_meta
-                        // 这里 primary_attempt 一定是 Ok（见 primary_step 决策），但仍用
-                        // 模式匹配避免 unwrap/expect。
-                        let r = match primary_attempt {
-                            Ok(r) => r,
-                            Err(_) => unreachable!("PrimarySuccess decided from Ok arm"),
-                        };
-                        save_and_materialize(&app, &asset, &task, &r).await;
-                        write_conversion_meta(
-                            &app,
-                            &asset.id,
-                            &primary_name,
-                            &mime_for_meta,
-                            &source_hash,
-                            r.quality_level,
-                            false,
-                            None,
-                        );
-                    }
-                    Step::PrimaryEmpty | Step::PrimaryError => {
-                        // 登记 primary 失败/空 一行 conversion_meta
-                        let primary_err_class = primary_attempt_class
-                            .clone()
-                            .unwrap_or_else(|| "empty_output".to_string());
-                        write_conversion_meta(
-                            &app,
-                            &asset.id,
-                            &primary_name,
-                            &mime_for_meta,
-                            &source_hash,
-                            0,
-                            false,
-                            Some(&primary_err_class),
-                        );
-
-                        // 尝试 fallback（排除 primary 名称防止死循环）
-                        let fb = get_fallback_extractor_for_excluding(
-                            &asset.mime_type,
-                            &primary_name,
-                        );
-                        let mut fallback_done = false;
-                        if let Some(fb_extractor) = fb {
-                            let fb_name = fb_extractor.name().to_string();
-                            let _ = app.emit("extraction:progress", serde_json::json!({
-                                "assetId": task.asset_id,
-                                "status": "extracting",
-                                "fallbackUsed": true,
-                                "message": format!("{primary_name} 失败，回退到 {fb_name}..."),
-                            }));
-                            let fb_attempt = run_extractor_blocking(
-                                fb_extractor,
-                                &asset.file_path,
-                                &options,
-                            )
-                            .await;
-                            match fb_attempt {
-                                Ok(r) if extraction_is_usable(&r) => {
-                                    save_and_materialize(&app, &asset, &task, &r).await;
-                                    write_conversion_meta(
-                                        &app,
-                                        &asset.id,
-                                        &fb_name,
-                                        &mime_for_meta,
-                                        &source_hash,
-                                        r.quality_level,
-                                        true,
-                                        None,
-                                    );
-                                    fallback_done = true;
-                                }
-                                Ok(_) => {
-                                    // fallback 也空
-                                    write_conversion_meta(
-                                        &app,
-                                        &asset.id,
-                                        &fb_name,
-                                        &mime_for_meta,
-                                        &source_hash,
-                                        0,
-                                        true,
-                                        Some("empty_output"),
-                                    );
-                                }
-                                Err(fb_err) => {
-                                    let fb_class = extract_error_class(&fb_err);
-                                    write_conversion_meta(
-                                        &app,
-                                        &asset.id,
-                                        &fb_name,
-                                        &mime_for_meta,
-                                        &source_hash,
-                                        0,
-                                        true,
-                                        Some(fb_class),
-                                    );
-                                }
-                            }
-                        }
-
-                        if !fallback_done {
-                            // 都失败 → placeholder（不推进 derivative_version）
-                            let error_msg = match &primary_attempt {
-                                Ok(_) => "提取成功但结构化内容为空".to_string(),
-                                Err(e) => e.to_string(),
-                            };
-                            // 把真实失败原因打到日志，避免下游只看到 code=conversion_error
-                            // 排查不到根因。primary_name / asset_id 一并带上方便定位。
-                            log::warn!(
-                                "调度器：提取失败 asset={} primary={} reason={}",
-                                asset.id,
-                                primary_name,
-                                error_msg
-                            );
-                            let is_terminal = task.retry_count + 1 >= task.max_retries;
-                            db_handle_task_error(
-                                &app, &task.id, &task.asset_id,
-                                task.retry_count, task.max_retries,
-                                &error_msg,
-                            );
-                            let _ = app.emit("extraction:failed", serde_json::json!({
-                                "assetId": task.asset_id,
-                                "errorMessage": error_msg,
-                                "retryCount": task.retry_count + 1,
-                            }));
-                            if is_terminal && source_asset_should_materialize(&asset) {
-                                if source_asset_is_markdown(&asset) {
-                                    materialize_source_markdown(&app, &asset);
-                                } else {
-                                    let code = primary_attempt_class
-                                        .as_deref()
-                                        .unwrap_or("extract_failed");
-                                    materialize_placeholder(&app, &asset, code, &error_msg);
-                                }
-                            }
+                    if is_terminal && source_asset_should_materialize(&asset) {
+                        if source_asset_is_markdown(&asset) {
+                            materialize_source_markdown(&app, &asset);
+                        } else {
+                            let code = primary_attempt_class.as_deref().unwrap_or("extract_failed");
+                            materialize_placeholder(&app, &asset, code, &error_msg);
                         }
                     }
                 }
             }
-
-            // 退出循环时重置运行标志，以便下次调用 start() 能重新启动
-            let mut guard = is_running.lock().await;
-            *guard = false;
-        });
+        }
     }
 
     /// 启动恢复：重置 running 状态的任务为 queued
@@ -505,20 +564,15 @@ impl PipelineScheduler {
 
 // ─── 同步 DB 辅助函数（不跨 await，MutexGuard 不需要 Send）────────────────────
 
-fn db_get_next_task(app: &AppHandle) -> Result<Option<db_ext::PipelineTaskRow>, String> {
-    let db = app.state::<Database>();
-    let conn = db.conn()?;
-    Ok(db_ext::get_queued_tasks(&conn, 1)
-        .unwrap_or_default()
-        .into_iter()
-        .next())
-}
-
 fn db_has_queued_tasks(app: &AppHandle) -> Result<bool, String> {
     let db = app.state::<Database>();
     let conn = db.conn()?;
     let stats = db_ext::get_pipeline_stats(&conn).unwrap_or_else(|_| db_ext::PipelineStats {
-        queued: 0, running: 0, completed: 0, failed: 0, cancelled: 0,
+        queued: 0,
+        running: 0,
+        completed: 0,
+        failed: 0,
+        cancelled: 0,
     });
     Ok(stats.queued > 0)
 }
@@ -687,16 +741,18 @@ fn update_conversion_meta_failure_code(
         }
     };
     if let Err(e) = db_conv_meta::update_failure_code(&conn, source_asset_id, code) {
-        log::warn!(
-            "更新 conversion_meta.failure_code 失败 (source={source_asset_id}): {e}"
-        );
+        log::warn!("更新 conversion_meta.failure_code 失败 (source={source_asset_id}): {e}");
     }
 }
 
 fn db_mark_task_status(app: &AppHandle, task_id: &str, asset_id: &str, status: &str, reason: &str) {
     let db = app.state::<Database>();
     if let Ok(conn) = db.conn() {
-        let msg = if reason.is_empty() { None } else { Some(reason) };
+        let msg = if reason.is_empty() {
+            None
+        } else {
+            Some(reason)
+        };
         if status == "unsupported" {
             let _ = db_ext::update_task_status(&conn, task_id, "completed", None);
             let _ = db_ext::update_extraction_status(&conn, asset_id, "unsupported", None);
@@ -720,8 +776,13 @@ fn db_save_extraction_result(
     let db = app.state::<Database>();
     if let Ok(conn) = db.conn() {
         let _ = db_ext::update_extraction_result(
-            &conn, asset_id, raw_text, structured_md,
-            quality_level, extractor_type, segments_json,
+            &conn,
+            asset_id,
+            raw_text,
+            structured_md,
+            quality_level,
+            extractor_type,
+            segments_json,
         );
         let _ = db_ext::update_task_status(&conn, task_id, "completed", None);
     } else {
@@ -770,12 +831,7 @@ fn build_frontmatter(
     )
 }
 
-fn archive_existing_version(
-    workspace_dir: &Path,
-    source_id: &str,
-    version: i32,
-    old_path: &str,
-) {
+fn archive_existing_version(workspace_dir: &Path, source_id: &str, version: i32, old_path: &str) {
     let versions_dir = workspace_dir.join("_versions").join(source_id);
     if let Err(e) = std::fs::create_dir_all(&versions_dir) {
         log::warn!(
@@ -878,8 +934,12 @@ fn write_derivative_md(
     let md_display_name = format!("{stem}.md");
 
     let next_version = source_asset.derivative_version + 1;
-    let frontmatter =
-        build_frontmatter(&source_asset.id, next_version, extractor_type, quality_level);
+    let frontmatter = build_frontmatter(
+        &source_asset.id,
+        next_version,
+        extractor_type,
+        quality_level,
+    );
     let final_content = format!("{frontmatter}{md_body}");
     let hash = compute_sha256(md_body);
     let now = chrono::Utc::now().to_rfc3339();
@@ -1077,14 +1137,13 @@ fn write_placeholder_md(
     failure_code: &str,
     reason: &str,
 ) {
-    let workspace_dir =
-        match crate::workspace::ensure_project_workspace(&source_asset.project_id) {
-            Ok(d) => d,
-            Err(e) => {
-                log::warn!("写 placeholder：无法创建工作区目录: {e}");
-                return;
-            }
-        };
+    let workspace_dir = match crate::workspace::ensure_project_workspace(&source_asset.project_id) {
+        Ok(d) => d,
+        Err(e) => {
+            log::warn!("写 placeholder：无法创建工作区目录: {e}");
+            return;
+        }
+    };
 
     let stem_raw = Path::new(&source_asset.name)
         .file_stem()
@@ -1132,7 +1191,10 @@ fn write_placeholder_md(
     };
 
     if let Err(e) = std::fs::write(&target_path, &final_content) {
-        log::warn!("写 placeholder：写出文件失败 {}: {e}", target_path.display());
+        log::warn!(
+            "写 placeholder：写出文件失败 {}: {e}",
+            target_path.display()
+        );
         return;
     }
 
@@ -1210,10 +1272,7 @@ fn materialize_source_markdown(app: &AppHandle, source_asset: &crate::models::As
     let body = match std::fs::read_to_string(&source_asset.file_path) {
         Ok(s) => s,
         Err(e) => {
-            log::warn!(
-                "物化源 MD：读取失败 {}: {e}",
-                source_asset.file_path
-            );
+            log::warn!("物化源 MD：读取失败 {}: {e}", source_asset.file_path);
             materialize_placeholder(
                 app,
                 source_asset,
@@ -1257,10 +1316,8 @@ async fn run_extractor_blocking(
     let path = file_path.to_string();
     let opts = options.clone();
     let started = Instant::now();
-    let join = tokio::task::spawn_blocking(move || {
-        extractor.extract(Path::new(&path), &opts)
-    })
-    .await;
+    let join =
+        tokio::task::spawn_blocking(move || extractor.extract(Path::new(&path), &opts)).await;
     let _elapsed = started.elapsed();
     match join {
         Ok(res) => res,
@@ -1287,8 +1344,10 @@ fn extract_error_class(e: &ExtractionError) -> &'static str {
 fn parse_error_class_prefix(msg: &str) -> Option<&str> {
     // ExtractionError::Display 形如 "解析错误: error_class:xxx|..."
     // 兼容裸字符串和带前缀两种
-    let rest = msg.strip_prefix("error_class:")
-        .or_else(|| msg.find("error_class:").map(|i| &msg[i + "error_class:".len()..]))?;
+    let rest = msg.strip_prefix("error_class:").or_else(|| {
+        msg.find("error_class:")
+            .map(|i| &msg[i + "error_class:".len()..])
+    })?;
     let end = rest.find('|')?;
     Some(&rest[..end])
 }
@@ -1379,8 +1438,7 @@ fn kc_persist_resolved(
     asset: &crate::models::Asset,
     resolved: &crate::kc::enrichment::ResolvedEnrichment,
 ) {
-    let source_hash =
-        file_sha256(Path::new(&asset.file_path)).unwrap_or_else(|_| String::new());
+    let source_hash = file_sha256(Path::new(&asset.file_path)).unwrap_or_else(|_| String::new());
 
     let db = app.state::<Database>();
     let conn = match db.conn() {
@@ -1467,7 +1525,9 @@ pub fn kc_persist_resolved_with_conn(
                 // 把刚 insert 的这行 KC conversion_meta 标记上 E_KC_*。
                 if let Some(fc) = resolved.failure_code_for_meta {
                     if let Some(code) = db_conv_meta::parse_failure_code(fc) {
-                        if let Err(e) = db_conv_meta::update_failure_code(conn, asset_id, Some(code)) {
+                        if let Err(e) =
+                            db_conv_meta::update_failure_code(conn, asset_id, Some(code))
+                        {
                             log::warn!(
                                 "KC 注入：写 conversion_meta.failure_code 失败 asset={asset_id} code={fc}: {e}"
                             );
@@ -1479,9 +1539,7 @@ pub fn kc_persist_resolved_with_conn(
                     }
                 }
             }
-            Err(e) => log::warn!(
-                "KC 注入：追加 conversion_meta KC 行失败 asset={asset_id}: {e}"
-            ),
+            Err(e) => log::warn!("KC 注入：追加 conversion_meta KC 行失败 asset={asset_id}: {e}"),
         }
     }
 }
@@ -1671,8 +1729,7 @@ mod tests {
     /// AC-4：extract_error_class 在 ParseError 带前缀时直接解析；无前缀走 classify_error 兜底
     #[test]
     fn extract_error_class_prefers_prefix_then_falls_back() {
-        let e1 =
-            ExtractionError::ParseError("error_class:timeout|did not finish".to_string());
+        let e1 = ExtractionError::ParseError("error_class:timeout|did not finish".to_string());
         assert_eq!(extract_error_class(&e1), "timeout");
 
         let e2 = ExtractionError::ParseError("subprocess timed out after 60s".to_string());
@@ -1734,8 +1791,14 @@ mod tests {
             ..ExtractOptions::default()
         };
         assert_eq!(runtime_check_short_circuit("pdf_text", &opts_fail), None);
-        assert_eq!(runtime_check_short_circuit("text_passthrough", &opts_fail), None);
-        assert_eq!(runtime_check_short_circuit("audio_asr_iflytek", &opts_fail), None);
+        assert_eq!(
+            runtime_check_short_circuit("text_passthrough", &opts_fail),
+            None
+        );
+        assert_eq!(
+            runtime_check_short_circuit("audio_asr_iflytek", &opts_fail),
+            None
+        );
     }
 
     // ─── task_010 (AC-3/AC-4)：audio/video 路由 ─────────────────────────────
@@ -1750,7 +1813,13 @@ mod tests {
             markitdown_enabled: true,
             ..ExtractOptions::default()
         };
-        for mime in ["audio/mpeg", "audio/wav", "audio/mp4", "audio/flac", "audio/x-wav"] {
+        for mime in [
+            "audio/mpeg",
+            "audio/wav",
+            "audio/mp4",
+            "audio/flac",
+            "audio/x-wav",
+        ] {
             let extractor = get_extractor_for(mime, &opts)
                 .unwrap_or_else(|| panic!("audio mime={mime} 应有 extractor"));
             assert_eq!(
@@ -1770,7 +1839,12 @@ mod tests {
     /// 显式拒绝（不依赖 fallback / unsupported 静默路径）。
     #[test]
     fn video_mime_is_explicitly_rejected() {
-        for mime in ["video/mp4", "video/webm", "video/quicktime", "video/x-msvideo"] {
+        for mime in [
+            "video/mp4",
+            "video/webm",
+            "video/quicktime",
+            "video/x-msvideo",
+        ] {
             assert!(
                 video_route_should_reject(mime),
                 "AC-3：{mime} 应被 video 路由拒绝"
@@ -1877,7 +1951,11 @@ mod tests {
         conn
     }
 
-    fn make_kc_meta(doc_id: &str, version: &str, source: crate::kc::errors::KcTagsSource) -> crate::kc::errors::KcMeta {
+    fn make_kc_meta(
+        doc_id: &str,
+        version: &str,
+        source: crate::kc::errors::KcTagsSource,
+    ) -> crate::kc::errors::KcMeta {
         crate::kc::errors::KcMeta {
             doc_id: doc_id.to_string(),
             kc_version: version.to_string(),
@@ -1915,7 +1993,9 @@ mod tests {
         kc_persist_resolved_with_conn(&conn, asset_id, "application/pdf", "deadbeef", &resolved);
 
         // extracted_content 三列被 UPDATE
-        let row = db_ext::db_read_kc_status(&conn, asset_id).expect("read kc status").expect("row");
+        let row = db_ext::db_read_kc_status(&conn, asset_id)
+            .expect("read kc status")
+            .expect("row");
         assert_eq!(row.kc_enriched.as_deref(), Some("true"));
         assert_eq!(row.kc_version.as_deref(), Some("0.9"));
         assert_eq!(row.kc_tags_source.as_deref(), Some("ai+rule"));
@@ -1929,7 +2009,9 @@ mod tests {
         assert_eq!(row.source_mime, "application/pdf");
         assert_eq!(row.source_hash, "deadbeef");
         // failure_code: Success 不写——验证当前最新行 failure_code 为 NULL
-        let state = db_conv_meta::latest_for_source(&conn, asset_id).expect("latest").expect("row");
+        let state = db_conv_meta::latest_for_source(&conn, asset_id)
+            .expect("latest")
+            .expect("row");
         assert_eq!(
             state.error_class, None,
             "Success 不应触发 conversion_meta.error_class 写入"
@@ -1955,7 +2037,9 @@ mod tests {
 
         kc_persist_resolved_with_conn(&conn, asset_id, "application/pdf", "deadbeef", &resolved);
 
-        let row = db_ext::db_read_kc_status(&conn, asset_id).expect("read").expect("row");
+        let row = db_ext::db_read_kc_status(&conn, asset_id)
+            .expect("read")
+            .expect("row");
         assert_eq!(row.kc_enriched.as_deref(), Some("false"));
         assert_eq!(row.kc_version, None, "Disabled 不写 kc_version");
         assert_eq!(row.kc_tags_source, None, "Disabled 不写 kc_tags_source");
@@ -1989,7 +2073,9 @@ mod tests {
 
         kc_persist_resolved_with_conn(&conn, asset_id, "application/pdf", "deadbeef", &resolved);
 
-        let row = db_ext::db_read_kc_status(&conn, asset_id).expect("read").expect("row");
+        let row = db_ext::db_read_kc_status(&conn, asset_id)
+            .expect("read")
+            .expect("row");
         assert_eq!(row.kc_enriched.as_deref(), Some("partial"));
         assert_eq!(row.kc_version.as_deref(), Some("unknown"));
         assert_eq!(row.kc_tags_source.as_deref(), Some("rule_only"));

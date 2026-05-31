@@ -26,16 +26,27 @@ use std::path::{Path, PathBuf};
 /// `Notecapt-1` 等；精确匹配会导致"重新接入读不到新文件"。
 pub const TARGET_VOLUME_NAME: &str = "Notecapt";
 
-/// 卷名是否命中目标设备（前缀匹配）。抽成纯函数便于单测。
+/// 卷名是否命中目标设备（**大小写不敏感**前缀匹配）。抽成纯函数便于单测。
+///
+/// 大小写不敏感的原因：设备实际卷标常被 macOS 挂为 `NoteCapt`（大写 C），而历史
+/// 常量是 `Notecapt`（小写 c）。大小写敏感的 `starts_with` 会把所有大写 C 的卷
+/// 整批漏掉 → 「USB 刷新检测不到新文件」（实测 /Volumes 同时存在 NoteCapt 1/2/3）。
 pub fn name_matches_target(volume_name: &str) -> bool {
-    volume_name.starts_with(TARGET_VOLUME_NAME)
+    volume_name
+        .to_ascii_lowercase()
+        .starts_with(&TARGET_VOLUME_NAME.to_ascii_lowercase())
 }
 
-/// 在 `/Volumes` 下查找已挂载的目标设备卷（卷名以 [`TARGET_VOLUME_NAME`] 为前缀即命中）。
+/// 在 `/Volumes` 下查找**所有**命中目标设备的卷（卷名以 [`TARGET_VOLUME_NAME`] 为
+/// 前缀即命中，大小写不敏感）。按字典序返回（确定性）。
 ///
-/// 返回命中的挂载点；多个命中时取字典序最靠前（确定性）。无命中 → `None`。
-pub fn find_target_mount() -> Option<PathBuf> {
-    let entries = std::fs::read_dir("/Volumes").ok()?;
+/// 返回 Vec 而非单个：反复插拔 / USBReenum 会让 macOS 攒下多个挂载点
+/// （`NoteCapt`、`NoteCapt 1`、`Notecapt 4` …，含已卸载残留的空幽灵目录）。
+/// 只取一个容易命中空幽灵卷 → 扫不到真实设备上的新图片。调用方应扫描全部并合并。
+pub fn find_target_mounts() -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir("/Volumes") else {
+        return Vec::new();
+    };
     let mut matches: Vec<PathBuf> = entries
         .flatten()
         .map(|e| e.path())
@@ -48,7 +59,13 @@ pub fn find_target_mount() -> Option<PathBuf> {
         })
         .collect();
     matches.sort();
-    matches.into_iter().next()
+    matches
+}
+
+/// 兼容旧调用：返回第一个命中卷（仅用于「是否挂载」的存在性判断，如 volume_watch
+/// 的边沿检测）。扫描新文件请用 [`find_target_mounts`] + [`scan_target_card`]。
+pub fn find_target_mount() -> Option<PathBuf> {
+    find_target_mounts().into_iter().next()
 }
 
 /// 支持的图片扩展名（小写比较）。
@@ -216,18 +233,39 @@ pub fn mark_imported(state: &mut ImportedMediaState, hashes: &[String]) {
 /// 返回 `None` 表示目标卷未挂载；`Some(scan)` 时 `new_files` 可能为空
 /// （卡在但无新图片）。已自动加载/比对去重状态。
 pub fn scan_target_card() -> Option<CardScan> {
-    let mount = find_target_mount()?;
-    let device_name = mount
+    let mounts = find_target_mounts();
+    if mounts.is_empty() {
+        return None;
+    }
+    let state = load_state(&state_path());
+    let imported: HashSet<String> = state.imported_hashes.into_iter().collect();
+
+    // 扫描**所有**命中卷（容忍大小写差异 + USBReenum 攒下的多/幽灵挂载点），
+    // 跨卷按内容 hash 去重后合并新图片。空幽灵卷自然贡献 0 个，不影响。
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut new_files: Vec<NewMediaFile> = Vec::new();
+    // mount_path / device_name 取「贡献新图片最多」的卷，便于前端展示真实设备。
+    let mut best_mount = mounts[0].clone();
+    let mut best_count = 0usize;
+    for m in &mounts {
+        let fresh: Vec<NewMediaFile> = scan_new_images(m, &imported)
+            .into_iter()
+            .filter(|f| seen.insert(f.hash.clone()))
+            .collect();
+        if fresh.len() > best_count {
+            best_count = fresh.len();
+            best_mount = m.clone();
+        }
+        new_files.extend(fresh);
+    }
+    let device_name = best_mount
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(TARGET_VOLUME_NAME)
         .to_string();
-    let state = load_state(&state_path());
-    let imported: HashSet<String> = state.imported_hashes.into_iter().collect();
-    let new_files = scan_new_images(&mount, &imported);
     Some(CardScan {
         device_name,
-        mount_path: mount.to_string_lossy().to_string(),
+        mount_path: best_mount.to_string_lossy().to_string(),
         new_files,
     })
 }

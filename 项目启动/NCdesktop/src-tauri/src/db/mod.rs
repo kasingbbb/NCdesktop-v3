@@ -64,9 +64,10 @@ impl Database {
             )
         });
 
-        // max_size=8：本机桌面应用并发面板上限的经验值；过大反而增加上下文切换。
+        // max_size=12：并行提取调度峰值并发 2(ASR)+2(OCR)+5(其他)=9 个任务，
+        // 各自按需取连接；再留 3 条给 UI 命令 / source_scan 等，避免连接饥饿。
         let pool = Pool::builder()
-            .max_size(8)
+            .max_size(12)
             .build(manager)
             .map_err(|e| format!("数据库连接池创建失败: {e}"))?;
 
